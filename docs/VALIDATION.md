@@ -46,3 +46,11 @@ Yerel entegrasyon: başka Odak süreci kapalıyken `npm run tauri build -- --deb
 - Native test gerçek JSON dosyasını dışa aktardı; aktif sayaçta içe aktarmayı reddetti; iptalden sonra yedeği geri yükleyip önceki veriler için otomatik kurtarma dosyası oluşturdu. [Native sonuç](native-test-v1.1.0.json).
 - İçe aktarılan çalışan sayaç gerçek süreç çıkışı ve yeniden açılış sonrasında doğru kaldı. [Yeniden başlatma sonucu](native-restart-v1.1.0.json).
 - Universal DMG yine Intel + Apple Silicon, ad-hoc imzalıdır. GitHub tag iş akışı DMG yanında eşleşen SHA-256 dosyasını da üretir.
+
+## GitHub’dan kurulum doğrulaması
+
+- v1.0.0 tag’i için [GitHub Actions universal yayın işi](https://github.com/mahmut-cskn/odak-macos/actions/runs/37769632697) başarıyla tamamlandı.
+- v1.1.0 DMG, local build klasörü yerine public GitHub Release’ten indirildi; SHA-256 dosyasıyla eşleşti ve `hdiutil verify` geçti.
+- İndirilen DMG’den `/Applications/Odak.app` kuruldu. Ad-hoc imza doğrulandı, `lipo` Intel + arm64 mimarilerini ve Info.plist `1.1.0` sürümünü gösterdi.
+- Kurulu uygulama açıldı; görünür 850×780 ana pencere ve Dock’u gizleyen Accessory politikası doğrulandı. Gerçek kullanıcı SQLite dosyası `integrity_check=ok`; native test verileri bu dosyaya yazılmadı.
+- Otomatik başlatma kaydı `/Applications/Odak.app/Contents/MacOS/odak` yolunu kullanır. Kurulum imajları çıkarıldı; uygulama kurulu kopyadan çalışır.
