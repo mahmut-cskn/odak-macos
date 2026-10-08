@@ -11,6 +11,8 @@ import {
   Settings as SettingsIcon,
   BarChart3,
   Pencil,
+  Star,
+  LockKeyhole,
   Play,
   Pause,
   X,
@@ -34,6 +36,9 @@ import { action, call, load, subscribe } from "./api";
 import {
   calendarPreview,
   dailyTrend,
+  isPastTask,
+  priorityFor,
+  validatePlanningChange,
   cloneTask,
   newId,
   clock,
@@ -54,6 +59,16 @@ import {
   type LabelEntry,
   type Session,
 } from "./domain";
+type Confirmation = {
+  title: string;
+  message: string;
+  action: () => Promise<boolean> | boolean;
+};
+type ConfirmRequest = (
+  title: string,
+  message: string,
+  action: Confirmation["action"],
+) => void;
 type Tab = "today" | "list" | "calendar" | "completed" | "stats" | "settings";
 const weekdays = ["Paz", "Pzt", "Sal", "Çar", "Per", "Cum", "Cmt"];
 const fullDate = (date: string) =>
@@ -79,7 +94,12 @@ export default function App() {
     [busy, setBusy] = useState(false),
     [quickTitle, setQuickTitle] = useState("");
   const [focusTaskId, setFocusTaskId] = useState("");
-  const [startAfterSave, setStartAfterSave] = useState(false);
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [prioritySort, setPrioritySort] = useState(false);
+  const requestDelete: ConfirmRequest = (title, message, action) => {
+    setError("");
+    setConfirmation({ title, message, action });
+  };
   const quickRef = useRef<HTMLInputElement>(null);
   const apply = useCallback((s: Snapshot) => {
     setSnapshot(s);
@@ -154,7 +174,7 @@ export default function App() {
     }
   }, [!!snapshot, quick]);
   useEffect(() => {
-    if (!quick && snapshot)
+    if (!quick && snapshot && !(tab === "calendar" && day < dayKey()))
       run("ensure_day", { date: tab === "calendar" ? day : dayKey() });
   }, [tab, day, !!snapshot, quick]);
   useEffect(() => {
@@ -234,8 +254,10 @@ export default function App() {
   const filterLabels = [
     ...new Set(data.tasks.map((t) => t.label).filter(Boolean)),
   ].sort();
+  const priorities = snapshot.priorities || {};
+  const calendarReadOnly = tab === "calendar" && day < dayKey();
   const focusTasks = data.tasks.filter(
-    (t) => t.status === "active" && !t.recurrenceRule,
+    (t) => t.status === "active" && !t.recurrenceRule && !isPastTask(t),
   );
   const selectedFocusTask = focusTasks.find((t) => t.id === focusTaskId);
   const timerTask =
@@ -255,19 +277,28 @@ export default function App() {
               .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0))
           : tasksForDay(data.tasks, day);
   if (filter) tasks = tasks.filter((t) => t.label === filter);
+  if (prioritySort && (tab === "today" || tab === "list"))
+    tasks = [...tasks].sort(
+      (a, b) => priorityFor(b, priorities) - priorityFor(a, priorities),
+    );
   const add = () => {
-    setStartAfterSave(false);
+    if (calendarReadOnly) return;
     setEditor(
       newTask(tab === "calendar" ? day : tab === "today" ? dayKey() : null),
     );
   };
-  const move = (task: Task, date: string | null) =>
-    run("save_task", {
+  const move = (task: Task, date: string | null) => {
+    if (date && date < dayKey()) {
+      setError("Geçmiş bir güne görev taşınamaz.");
+      return;
+    }
+    return run("save_task", {
       ...task,
       scheduledDate: date,
       startAt: null,
       endAt: null,
     });
+  };
   const start = (taskId: string) => {
     if (
       !Number.isInteger(work) ||
@@ -359,191 +390,194 @@ export default function App() {
         )}
         {tab !== "settings" && tab !== "stats" && (
           <>
-            <section
-              className={`timer-card ${timer.phase === "break" || timer.pausedPhase === "break" ? "resting" : ""}`}
-            >
-              <div className="timer-top">
-                {timerTask ? (
-                  <TimerTitle
-                    task={timerTask}
-                    busy={busy}
-                    onRename={(title) =>
-                      run("rename_task", { id: timerTask.id, title })
-                    }
-                  />
-                ) : (
-                  <span className="timer-title">
-                    {active || timer.breakReady
-                      ? "Önceki odak oturumu"
-                      : "Bir görev seç"}
+            {(tab === "today" || tab === "list") && (
+              <section
+                className={`timer-card ${timer.phase === "break" || timer.pausedPhase === "break" ? "resting" : ""}`}
+              >
+                <div className="timer-top">
+                  {timerTask ? (
+                    <TimerTitle
+                      task={timerTask}
+                      busy={busy}
+                      onRename={(title) =>
+                        run("rename_task", { id: timerTask.id, title })
+                      }
+                    />
+                  ) : (
+                    <span className="timer-title">
+                      {active || timer.breakReady
+                        ? "Önceki odak oturumu"
+                        : "Bir görev seç"}
+                    </span>
+                  )}
+                  <span className="eyebrow timer-phase">
+                    <span className="pulse-dot" />
+                    {timer.phase === "paused"
+                      ? "DURAKLATILDI"
+                      : timer.phase === "break"
+                        ? "MOLA ZAMANI"
+                        : timer.breakReady
+                          ? "MOLA BİTTİ"
+                          : active
+                            ? "ÇALIŞIYOR"
+                            : "HAZIR"}
                   </span>
-                )}
-                <span className="eyebrow timer-phase">
-                  <span className="pulse-dot" />
-                  {timer.phase === "paused"
-                    ? "DURAKLATILDI"
-                    : timer.phase === "break"
-                      ? "MOLA ZAMANI"
-                      : timer.breakReady
-                        ? "MOLA BİTTİ"
-                        : active
-                          ? "ÇALIŞIYOR"
-                          : "HAZIR"}
-                </span>
-              </div>
-              <div className="timer-body">
-                <div>
-                  <div className="timer-number" aria-live="off">
-                    {active
-                      ? clock(remaining)
-                      : timer.breakReady
-                        ? "00:00"
-                        : clock(work * 60000)}
-                  </div>
                 </div>
-                <div className="timer-controls">
-                  {active ? (
-                    <>
+                <div className="timer-body">
+                  <div>
+                    <div className="timer-number" aria-live="off">
+                      {active
+                        ? clock(remaining)
+                        : timer.breakReady
+                          ? "00:00"
+                          : clock(work * 60000)}
+                    </div>
+                  </div>
+                  <div className="timer-controls">
+                    {active ? (
+                      <>
+                        <button
+                          className="primary"
+                          disabled={busy}
+                          onClick={() =>
+                            run(timer.phase === "paused" ? "resume" : "pause")
+                          }
+                        >
+                          {timer.phase === "paused" ? (
+                            <Play size={16} />
+                          ) : (
+                            <Pause size={16} />
+                          )}{" "}
+                          {timer.phase === "paused" ? "Devam et" : "Duraklat"}
+                        </button>
+                        <button
+                          className="cancel-btn"
+                          disabled={busy}
+                          onClick={() =>
+                            requestDelete(
+                              "Bu oturumu iptal etmek istiyor musun?",
+                              "Şu anki oturum silinecek ve bu oturum için süre yazılmayacak. Önceden biten oturumlar korunur.",
+                              () => run("cancel", { confirmed: true }),
+                            )
+                          }
+                        >
+                          <X size={15} />
+                          İptal et
+                        </button>
+                      </>
+                    ) : timer.breakReady ? (
+                      <>
+                        <button
+                          className="primary"
+                          disabled={
+                            busy ||
+                            (!focusTasks.some((t) => t.id === timer.taskId) &&
+                              !selectedFocusTask)
+                          }
+                          onClick={() => {
+                            if (focusTasks.some((t) => t.id === timer.taskId))
+                              run("continue_work");
+                            else if (selectedFocusTask)
+                              start(selectedFocusTask.id);
+                          }}
+                        >
+                          <Play size={16} />
+                          Devam et
+                        </button>
+                        <button onClick={() => run("extend_break")}>
+                          5 dk daha
+                        </button>
+                      </>
+                    ) : (
                       <button
                         className="primary"
-                        disabled={busy}
+                        disabled={busy || !selectedFocusTask}
                         onClick={() =>
-                          run(timer.phase === "paused" ? "resume" : "pause")
+                          selectedFocusTask && start(selectedFocusTask.id)
                         }
                       >
-                        {timer.phase === "paused" ? (
-                          <Play size={16} />
-                        ) : (
-                          <Pause size={16} />
-                        )}{" "}
-                        {timer.phase === "paused" ? "Devam et" : "Duraklat"}
-                      </button>
-                      <button
-                        className="cancel-btn"
-                        disabled={busy}
-                        onClick={() => run("cancel")}
-                      >
-                        <X size={15} />
-                        İptal et
-                      </button>
-                    </>
-                  ) : timer.breakReady ? (
-                    <>
-                      <button
-                        className="primary"
-                        onClick={() => {
-                          if (timerTask?.status === "active")
-                            run("continue_work");
-                          else {
-                            setStartAfterSave(true);
-                            setEditor(newTask(dayKey()));
-                          }
-                        }}
-                      >
                         <Play size={16} />
-                        Devam et
+                        Odaklanmaya başla
                       </button>
-                      <button onClick={() => run("extend_break")}>
-                        5 dk daha
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      className="primary"
-                      disabled={busy || !selectedFocusTask}
-                      onClick={() =>
-                        selectedFocusTask && start(selectedFocusTask.id)
-                      }
-                    >
-                      <Play size={16} />
-                      Odaklanmaya başla
-                    </button>
+                    )}
+                  </div>
+                </div>
+                {!active &&
+                  (!timer.breakReady ||
+                    !focusTasks.some((t) => t.id === timer.taskId)) && (
+                    <div className="focus-picker">
+                      <select
+                        aria-label="Odaklanılacak görev"
+                        value={selectedFocusTask?.id || ""}
+                        onChange={(e) => setFocusTaskId(e.target.value)}
+                      >
+                        <option value="">Hangi işe odaklanacaksın?</option>
+                        {focusTasks.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.title}
+                            {t.label ? ` · ${t.label}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   )}
+                <div className="timer-footer">
+                  <div className="duration-fields">
+                    <label>
+                      Çalışma{" "}
+                      <input
+                        aria-label="Çalışma süresi"
+                        type="number"
+                        min="1"
+                        max="90"
+                        value={work}
+                        disabled={active}
+                        onChange={(e) => {
+                          const n = Number(e.target.value);
+                          setWork(n);
+                          if (n < 1 || n > 90)
+                            setError("Çalışma 1–90 dakika olmalı.");
+                        }}
+                      />{" "}
+                      dk
+                    </label>
+                    <span className="duration-divider" />
+                    <label>
+                      Mola{" "}
+                      <input
+                        aria-label="Mola süresi"
+                        type="number"
+                        min="1"
+                        max="30"
+                        value={rest}
+                        disabled={active}
+                        onChange={(e) => {
+                          const n = Number(e.target.value);
+                          setRest(n);
+                          if (n < 1 || n > 30)
+                            setError("Mola 1–30 dakika olmalı.");
+                        }}
+                      />{" "}
+                      dk
+                    </label>
+                  </div>
+                  <span>
+                    <Clock size={13} />
+                    {activeTask
+                      ? `Toplam ${formatMinutes(spent(activeTask.id, data.sessions))}`
+                      : `Bugün ${formatMinutes(summary.daily)}`}
+                  </span>
                 </div>
-              </div>
-              {!active && !timer.breakReady && (
-                <div className="focus-picker">
-                  <select
-                    aria-label="Odaklanılacak görev"
-                    value={selectedFocusTask?.id || ""}
-                    onChange={(e) => setFocusTaskId(e.target.value)}
-                  >
-                    <option value="">Hangi işe odaklanacaksın?</option>
-                    {focusTasks.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.title}
-                        {t.label ? ` · ${t.label}` : ""}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    className="text-button"
-                    onClick={() => {
-                      setStartAfterSave(true);
-                      setEditor(newTask(dayKey()));
+                {active && (
+                  <div
+                    className="timer-progress"
+                    style={{
+                      width: `${100 - Math.min(100, remaining / (timer.plannedMin * 600))}%`,
                     }}
-                  >
-                    <Plus size={14} />
-                    Yeni görevle başla
-                  </button>
-                </div>
-              )}
-              <div className="timer-footer">
-                <div className="duration-fields">
-                  <label>
-                    Çalışma{" "}
-                    <input
-                      aria-label="Çalışma süresi"
-                      type="number"
-                      min="1"
-                      max="90"
-                      value={work}
-                      disabled={active}
-                      onChange={(e) => {
-                        const n = Number(e.target.value);
-                        setWork(n);
-                        if (n < 1 || n > 90)
-                          setError("Çalışma 1–90 dakika olmalı.");
-                      }}
-                    />{" "}
-                    dk
-                  </label>
-                  <span className="duration-divider" />
-                  <label>
-                    Mola{" "}
-                    <input
-                      aria-label="Mola süresi"
-                      type="number"
-                      min="1"
-                      max="30"
-                      value={rest}
-                      disabled={active}
-                      onChange={(e) => {
-                        const n = Number(e.target.value);
-                        setRest(n);
-                        if (n < 1 || n > 30)
-                          setError("Mola 1–30 dakika olmalı.");
-                      }}
-                    />{" "}
-                    dk
-                  </label>
-                </div>
-                <span>
-                  <Clock size={13} />
-                  {activeTask
-                    ? `Toplam ${formatMinutes(spent(activeTask.id, data.sessions))}`
-                    : `Bugün ${formatMinutes(summary.daily)}`}
-                </span>
-              </div>
-              {active && (
-                <div
-                  className="timer-progress"
-                  style={{
-                    width: `${100 - Math.min(100, remaining / (timer.plannedMin * 600))}%`,
-                  }}
-                />
-              )}
-            </section>
+                  />
+                )}
+              </section>
+            )}
             <section className="task-section">
               <div className="section-title">
                 <div>
@@ -566,10 +600,12 @@ export default function App() {
                           : "Takvim"}
                   </h1>
                 </div>
-                <button className="add-button" onClick={add}>
-                  <Plus size={16} />
-                  Yeni görev
-                </button>
+                {!calendarReadOnly && (
+                  <button className="add-button" onClick={add}>
+                    <Plus size={16} />
+                    Yeni görev
+                  </button>
+                )}
               </div>
               {tab === "calendar" && (
                 <div className="calendar">
@@ -631,9 +667,11 @@ export default function App() {
                           i - ((parseDay(`${month}-01`).getDay() + 6) % 7) + 1;
                         if (n < 1) return <span key={i} />;
                         const date = `${month}-${String(n).padStart(2, "0")}`,
-                          items = calendarPreview(data.tasks, date).filter(
-                            (t) => !filter || t.label === filter,
-                          );
+                          items = (
+                            date < dayKey()
+                              ? tasksForDay(data.tasks, date)
+                              : calendarPreview(data.tasks, date)
+                          ).filter((t) => !filter || t.label === filter);
                         return (
                           <button
                             key={date}
@@ -654,13 +692,21 @@ export default function App() {
                   </div>
                   <div className="day-heading">
                     <strong>{fullDate(day)}</strong>
-                    <button
-                      className="text-button"
-                      onClick={() => setEditor(newTask(day))}
-                    >
-                      <Plus size={14} />
-                      Bu güne görev ekle
-                    </button>
+                    {!calendarReadOnly && (
+                      <button
+                        className="text-button"
+                        onClick={() => setEditor(newTask(day))}
+                      >
+                        <Plus size={14} />
+                        Bu güne görev ekle
+                      </button>
+                    )}
+                    {calendarReadOnly && (
+                      <span className="read-only-badge">
+                        <LockKeyhole size={12} />
+                        Geçmiş · salt okunur
+                      </span>
+                    )}
                   </div>
                 </div>
               )}
@@ -669,16 +715,32 @@ export default function App() {
                   {tasks.length} görev
                   {tab === "calendar" ? " · tamamlananlar dahil" : ""}
                 </span>
-                <select
-                  aria-label="Etiket filtresi"
-                  value={filter}
-                  onChange={(e) => setFilter(e.target.value)}
-                >
-                  <option value="">Tüm etiketler</option>
-                  {filterLabels.map((l) => (
-                    <option key={l}>{l}</option>
-                  ))}
-                </select>
+                <div className="list-filters">
+                  {(tab === "today" || tab === "list") && (
+                    <select
+                      aria-label="Görev sıralaması"
+                      value={prioritySort ? "priority" : "original"}
+                      onChange={(e) =>
+                        setPrioritySort(e.target.value === "priority")
+                      }
+                    >
+                      <option value="original">Plan sırası</option>
+                      <option value="priority">
+                        Öncelik · yüksekten düşüğe
+                      </option>
+                    </select>
+                  )}
+                  <select
+                    aria-label="Etiket filtresi"
+                    value={filter}
+                    onChange={(e) => setFilter(e.target.value)}
+                  >
+                    <option value="">Tüm etiketler</option>
+                    {filterLabels.map((l) => (
+                      <option key={l}>{l}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
               <div className="task-list">
                 {tasks.map((task) => (
@@ -686,7 +748,12 @@ export default function App() {
                     key={task.id}
                     task={task}
                     sessions={data.sessions}
-                    canStart={!active}
+                    readOnly={calendarReadOnly}
+                    priority={priorityFor(task, priorities)}
+                    onPriority={(rating) =>
+                      run("set_priority", { id: task.id, rating })
+                    }
+                    canStart={!active && !isPastTask(task)}
                     busy={busy}
                     onToggle={() => run("toggle_task", { id: task.id })}
                     onEdit={() => setEditor(cloneTask(task))}
@@ -717,9 +784,11 @@ export default function App() {
                     <p>
                       {tab === "completed"
                         ? "Görevi bitirdiğinde solundaki yuvarlağa bas."
-                        : "Bir görev ekle; ne zaman yapacağına sen karar ver."}
+                        : calendarReadOnly
+                          ? "Bu günün kayıtları burada görünür; geçmişe yeni görev eklenmez."
+                          : "Bir görev ekle; ne zaman yapacağına sen karar ver."}
                     </p>
-                    {tab !== "completed" && (
+                    {tab !== "completed" && !calendarReadOnly && (
                       <button className="text-button" onClick={add}>
                         <Plus size={15} />
                         İlk görevi ekle
@@ -742,22 +811,48 @@ export default function App() {
                     Tekrarlayan görevler
                   </h3>
                   {data.tasks
-                    .filter((t) => t.recurrenceRule)
+                    .filter(
+                      (t) =>
+                        t.recurrenceRule && (!filter || t.label === filter),
+                    )
                     .map((t) => (
-                      <button
-                        key={t.id}
-                        onClick={() => setEditor(cloneTask(t))}
-                      >
-                        {t.title}
-                        <span>
-                          {t.recurrenceRule?.frequency === "daily"
-                            ? "Her gün"
-                            : t.recurrenceRule?.frequency === "weekly"
-                              ? "Her hafta"
-                              : "Her ay"}{" "}
-                          · Düzenle
-                        </span>
-                      </button>
+                      <article className="series-row" key={t.id}>
+                        <div>
+                          <button
+                            className="task-title"
+                            onClick={() => setEditor(cloneTask(t))}
+                          >
+                            {t.title}
+                          </button>
+                          <div className="task-meta">
+                            {t.label && (
+                              <span
+                                className="label-tag"
+                                style={{ color: t.color }}
+                              >
+                                <i style={{ background: t.color }} />
+                                {t.label}
+                              </span>
+                            )}
+                            <span>
+                              {t.recurrenceRule?.frequency === "daily"
+                                ? "Her gün"
+                                : t.recurrenceRule?.frequency === "weekly"
+                                  ? "Her hafta"
+                                  : "Her ay"}{" "}
+                              · Düzenle
+                            </span>
+                          </div>
+                        </div>
+                        <PriorityStars
+                          title={t.title}
+                          value={priorityFor(t, priorities)}
+                          disabled={busy}
+                          onChange={(rating) =>
+                            run("set_priority", { id: t.id, rating })
+                          }
+                        />
+                      </article>
                     ))}
                 </div>
               )}
@@ -841,25 +936,43 @@ export default function App() {
             active={active}
             labels={catalog}
             onLabelSave={(name, color) => run("save_label", { name, color })}
-            onLabelDelete={(name) => run("delete_label", { name })}
+            onLabelDelete={(name) =>
+              requestDelete(
+                "Etiketi silmek istiyor musun?",
+                `“${name}” seçim listesinden kaldırılacak. Mevcut görevlerin etiketleri korunur.`,
+                () => run("delete_label", { name, confirmed: true }),
+              )
+            }
             onSave={(s) => run("settings", s)}
             onSound={(phase) => run("test_sound", { phase })}
             onBackup={async (kind) => {
-              try {
-                const result = await call<string | null>(
-                  kind === "export" ? "export_backup" : "import_backup",
-                );
-                if (result) {
-                  await reload();
-                  setNotice(
-                    kind === "export"
-                      ? `Yedek kaydedildi: ${result}`
-                      : `Yedek yüklendi. Önceki verilerin kurtarma kopyası: ${result}`,
+              const backup = async () => {
+                try {
+                  const result = await call<string | null>(
+                    kind === "export" ? "export_backup" : "import_backup",
+                    kind === "import" ? { confirmed: true } : undefined,
                   );
+                  if (result) {
+                    await reload();
+                    setNotice(
+                      kind === "export"
+                        ? `Yedek kaydedildi: ${result}`
+                        : `Yedek yüklendi. Önceki verilerin kurtarma kopyası: ${result}`,
+                    );
+                  }
+                  return true;
+                } catch (e) {
+                  setError(String(e));
+                  return false;
                 }
-              } catch (e) {
-                setError(String(e));
-              }
+              };
+              if (kind === "import")
+                requestDelete(
+                  "Yedek mevcut verilerin yerini alsın mı?",
+                  "Seçeceğin yedek mevcut görevlerin ve oturumların yerini alır. Önce kurtarma kopyası oluşturulur.",
+                  backup,
+                );
+              else await backup();
             }}
           />
         )}
@@ -869,16 +982,20 @@ export default function App() {
           <Leaf size={12} />
           Bir seferde bir iş.
         </span>
-        <button onClick={() => setEditor(newTask())}>
-          <Plus size={13} />
-          Hızlı ekle{" "}
-          <kbd>
-            {data.settings.quickAddShortcut
-              .replace("CmdOrCtrl", "⌘")
-              .replace("Shift", "⇧")
-              .replaceAll("+", "")}
-          </kbd>
-        </button>
+        {!calendarReadOnly && (
+          <button
+            onClick={() => setEditor(newTask(tab === "calendar" ? day : null))}
+          >
+            <Plus size={13} />
+            Hızlı ekle{" "}
+            <kbd>
+              {data.settings.quickAddShortcut
+                .replace("CmdOrCtrl", "⌘")
+                .replace("Shift", "⇧")
+                .replaceAll("+", "")}
+            </kbd>
+          </button>
+        )}
       </footer>
       {editor && (
         <TaskEditor
@@ -886,29 +1003,68 @@ export default function App() {
           labels={labels}
           catalog={catalog}
           defaultDay={tab === "calendar" ? day : dayKey()}
-          startAfterSave={startAfterSave}
-          onClose={() => {
-            setEditor(null);
-            setStartAfterSave(false);
-          }}
-          onSave={async (t) => {
-            if (await run("save_task", t)) {
+          priority={priorityFor(editor, priorities)}
+          confirmDelete={requestDelete}
+          onClose={() => setEditor(null)}
+          onSave={async (t, rating) => {
+            const save = async () => {
+              if (!(await run("save_task", t))) return false;
+              if (
+                rating > 0 &&
+                rating !== priorityFor(editor, priorities) &&
+                !(await run("set_priority", { id: t.id, rating }))
+              )
+                return false;
               setEditor(null);
               setFocusTaskId(t.id);
-              if (startAfterSave) await start(t.id);
-              setStartAfterSave(false);
-            }
+              return true;
+            };
+            if (editor.recurrenceRule && !t.recurrenceRule)
+              requestDelete(
+                "Tekrar kuralını kaldırmak istiyor musun?",
+                "Gelecekteki başlanmamış tekrarlar kaldırılır. Tamamlanan ve başlanmış geçmiş korunur.",
+                save,
+              );
+            else await save();
           }}
           onDelete={
             data.tasks.some((t) => t.id === editor.id)
-              ? async () => {
-                  if (await run("delete_task", { id: editor.id }))
-                    setEditor(null);
-                }
+              ? () =>
+                  requestDelete(
+                    editor.recurrenceRule
+                      ? "Tekrar serisini silmek istiyor musun?"
+                      : "Görevi silmek istiyor musun?",
+                    editor.recurrenceRule
+                      ? `“${editor.title}” serisi ve gelecekteki başlanmamış örnekleri silinir. Tamamlanan ve başlanmış geçmiş korunur.`
+                      : `“${editor.title}” silinecek. Kaydedilmiş odak oturumları korunur.`,
+                    async () => {
+                      if (
+                        await run("delete_task", {
+                          id: editor.id,
+                          confirmed: true,
+                        })
+                      ) {
+                        setEditor(null);
+                        return true;
+                      }
+                      return false;
+                    },
+                  )
               : undefined
           }
           error={error}
           busy={busy}
+        />
+      )}
+      {confirmation && (
+        <ConfirmDialog
+          title={confirmation.title}
+          message={confirmation.message}
+          error={error}
+          onCancel={() => setConfirmation(null)}
+          onConfirm={async () => {
+            if (await confirmation.action()) setConfirmation(null);
+          }}
         />
       )}
     </div>
@@ -916,6 +1072,9 @@ export default function App() {
 }
 
 function TaskRow({
+  readOnly,
+  priority,
+  onPriority,
   task,
   sessions,
   canStart,
@@ -926,6 +1085,9 @@ function TaskRow({
   onMove,
   onSubtask,
 }: {
+  readOnly: boolean;
+  priority: number;
+  onPriority: (rating: number) => void;
   task: Task;
   sessions: Snapshot["data"]["sessions"];
   canStart: boolean;
@@ -944,18 +1106,38 @@ function TaskRow({
   return (
     <article className={`task-row ${completed ? "completed" : ""}`}>
       <div className="task-main">
-        <button
-          className="task-circle"
-          aria-label={`${task.title}: ${completed ? "geri al" : "tamamla"}`}
-          disabled={busy}
-          onClick={onToggle}
-        >
-          {completed && <Check size={13} />}
-        </button>
-        <div className="task-content">
-          <button className="task-title" onClick={onEdit}>
-            {task.title}
+        {readOnly ? (
+          <span
+            className="task-circle"
+            aria-label={completed ? "Tamamlandı" : "Aktif görev"}
+          >
+            {completed && <Check size={13} />}
+          </span>
+        ) : (
+          <button
+            className="task-circle"
+            aria-label={`${task.title}: ${completed ? "geri al" : "tamamla"}`}
+            disabled={busy}
+            onClick={onToggle}
+          >
+            {completed && <Check size={13} />}
           </button>
+        )}
+        <div className="task-content">
+          {readOnly ? (
+            <span className="task-title">{task.title}</span>
+          ) : (
+            <button className="task-title" onClick={onEdit}>
+              {task.title}
+            </button>
+          )}
+          <PriorityStars
+            title={task.title}
+            value={priority}
+            readOnly={readOnly}
+            disabled={busy}
+            onChange={onPriority}
+          />
           <div className="task-meta">
             {task.label && (
               <span className="label-tag" style={{ color: task.color }}>
@@ -997,26 +1179,28 @@ function TaskRow({
             )}
           </div>
         </div>
-        <div className="task-actions">
-          {!completed && (
+        {!readOnly && (
+          <div className="task-actions">
+            {!completed && (
+              <button
+                aria-label={`${task.title}: başlat`}
+                title="Pomodoro başlat"
+                disabled={!canStart || busy}
+                onClick={onStart}
+              >
+                <Play size={15} />
+              </button>
+            )}
             <button
-              aria-label={`${task.title}: başlat`}
-              title="Pomodoro başlat"
-              disabled={!canStart || busy}
-              onClick={onStart}
+              aria-label={`${task.title}: seçenekler`}
+              onClick={() => setMenu(!menu)}
             >
-              <Play size={15} />
+              <MoreHorizontal size={18} />
             </button>
-          )}
-          <button
-            aria-label={`${task.title}: seçenekler`}
-            onClick={() => setMenu(!menu)}
-          >
-            <MoreHorizontal size={18} />
-          </button>
-        </div>
+          </div>
+        )}
       </div>
-      {menu && (
+      {menu && !readOnly && (
         <div className="task-menu">
           <button
             onClick={() => {
@@ -1049,6 +1233,7 @@ function TaskRow({
                 <input
                   aria-label={`${task.title}: taşıma tarihi`}
                   type="date"
+                  min={dayKey()}
                   onChange={(e) => {
                     if (e.target.value) {
                       onMove(e.target.value);
@@ -1077,6 +1262,7 @@ function TaskRow({
               <input
                 type="checkbox"
                 checked={s.done}
+                disabled={readOnly}
                 onChange={(e) => onSubtask(s.id, e.target.checked)}
               />
               <span className={s.done ? "done" : ""}>{s.title}</span>
@@ -1084,7 +1270,7 @@ function TaskRow({
           ))}
         </div>
       )}
-      {allDone && !completed && (
+      {allDone && !completed && !readOnly && (
         <div className="suggestion">
           <Check size={12} />
           Alt görevler bitti. Hazırsan ana görevi de tamamlayabilirsin.
@@ -1099,7 +1285,8 @@ function TaskEditor({
   labels,
   catalog,
   defaultDay,
-  startAfterSave,
+  priority,
+  confirmDelete,
   onClose,
   onSave,
   onDelete,
@@ -1110,17 +1297,18 @@ function TaskEditor({
   labels: string[];
   catalog: LabelEntry[];
   defaultDay: string;
-  startAfterSave: boolean;
+  priority: number;
+  confirmDelete: ConfirmRequest;
   onClose: () => void;
-  onSave: (task: Task) => Promise<void>;
-  onDelete?: () => Promise<void>;
+  onSave: (task: Task, rating: number) => Promise<void>;
+  onDelete?: () => void;
   error: string;
   busy: boolean;
 }) {
   const [task, setTask] = useState(initial),
     [validation, setValidation] = useState(""),
-    [subtask, setSubtask] = useState(""),
-    [confirmDelete, setConfirmDelete] = useState(false);
+    [subtask, setSubtask] = useState("");
+  const [rating, setRating] = useState(priority);
   const patch = (p: Partial<Task>) => setTask((t) => ({ ...t, ...p }));
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -1130,12 +1318,14 @@ function TaskEditor({
     return () => document.removeEventListener("keydown", handler);
   }, [onClose]);
   const save = async () => {
-    const message = validateTask(task);
+    const message =
+      validateTask(task) ||
+      validatePlanningChange(task, onDelete ? initial : undefined);
     if (message) {
       setValidation(message);
       return;
     }
-    await onSave({ ...task, title: task.title.trim() });
+    await onSave({ ...task, title: task.title.trim() }, rating);
   };
   const changeDate = (value: string) => {
     const date = value || null;
@@ -1185,6 +1375,21 @@ function TaskEditor({
               onChange={(e) => patch({ title: e.target.value })}
             />
           </label>
+          <div className="field priority-field">
+            <span>
+              Öncelik <small>İsteğe bağlı · 1–5 yıldız</small>
+            </span>
+            <PriorityStars
+              title={task.title || "Yeni görev"}
+              value={rating}
+              onChange={setRating}
+            />
+            <small className="muted">
+              {rating
+                ? `${rating} yıldız · ${rating >= 4 ? "yüksek öncelik" : rating >= 2 ? "orta öncelik" : "düşük öncelik"}`
+                : "Henüz öncelik verilmedi"}
+            </small>
+          </div>
           <div className="field-grid">
             <label className="field">
               Etiket
@@ -1222,6 +1427,11 @@ function TaskEditor({
               Gün <span>İsteğe bağlı</span>
               <input
                 aria-label="Gün"
+                min={
+                  initial.scheduledDate && initial.scheduledDate < dayKey()
+                    ? initial.scheduledDate
+                    : dayKey()
+                }
                 required={!!task.recurrenceRule}
                 className={task.recurrenceRule ? "required-field" : ""}
                 type="date"
@@ -1427,11 +1637,18 @@ function TaskEditor({
                   type="button"
                   aria-label={`${s.title}: sil`}
                   onClick={() =>
-                    patch({
-                      subtasks: task.subtasks.filter(
-                        (item) => item.id !== s.id,
-                      ),
-                    })
+                    confirmDelete(
+                      "Alt görevi silmek istiyor musun?",
+                      `“${s.title}” alt görevi kaldırılacak. Ana görev korunur.`,
+                      () => {
+                        patch({
+                          subtasks: task.subtasks.filter(
+                            (item) => item.id !== s.id,
+                          ),
+                        });
+                        return true;
+                      },
+                    )
                   }
                 >
                   <X size={14} />
@@ -1493,15 +1710,9 @@ function TaskEditor({
           )}
           <div className="modal-footer">
             {onDelete && (
-              <button
-                type="button"
-                className="danger"
-                onClick={() =>
-                  confirmDelete ? onDelete() : setConfirmDelete(true)
-                }
-              >
+              <button type="button" className="danger" onClick={onDelete}>
                 <Trash2 size={14} />
-                {confirmDelete ? "Evet, görevi sil" : "Görevi sil"}
+                Görevi sil
               </button>
             )}
             <button type="button" onClick={onClose}>
@@ -1509,7 +1720,7 @@ function TaskEditor({
             </button>
             <button className="primary" disabled={busy}>
               <Check size={15} />
-              {startAfterSave ? "Kaydet ve başlat" : "Kaydet"}
+              Kaydet
             </button>
           </div>
         </form>
@@ -1531,7 +1742,7 @@ function SettingsPanel({
 }: {
   labels: LabelEntry[];
   onLabelSave: (name: string, color: string) => Promise<boolean>;
-  onLabelDelete: (name: string) => Promise<boolean>;
+  onLabelDelete: (name: string) => void;
   settings: Settings;
   databasePath: string;
   active: boolean;
@@ -1540,8 +1751,7 @@ function SettingsPanel({
   onBackup: (kind: "export" | "import") => Promise<void>;
 }) {
   const [draft, setDraft] = useState(settings),
-    [saved, setSaved] = useState(false),
-    [confirmImport, setConfirmImport] = useState(false);
+    [saved, setSaved] = useState(false);
   const [driveBackup, setDriveBackup] = useState<{
     configured: boolean;
     lastUploadedAt?: string;
@@ -1723,24 +1933,11 @@ function SettingsPanel({
             <Download size={15} />
             JSON dışa aktar
           </button>
-          <button
-            disabled={active}
-            onClick={() =>
-              confirmImport
-                ? onBackup("import").then(() => setConfirmImport(false))
-                : setConfirmImport(true)
-            }
-          >
+          <button disabled={active} onClick={() => onBackup("import")}>
             <Upload size={15} />
-            {confirmImport ? "Onayla ve dosya seç" : "JSON içe aktar"}
+            JSON içe aktar
           </button>
         </div>
-        {confirmImport && (
-          <p className="form-error">
-            Yedek mevcut verilerin yerini alır. Önceki veriler otomatik kurtarma
-            dosyasına kaydedilir.
-          </p>
-        )}
         {driveBackup?.configured && (
           <div className="drive-backup-info">
             <strong>Günlük Google Drive yedeği · bu Mac</strong>
@@ -2010,7 +2207,7 @@ function LabelManager({
 }: {
   labels: LabelEntry[];
   onSave: (name: string, color: string) => Promise<boolean>;
-  onDelete: (name: string) => Promise<boolean>;
+  onDelete: (name: string) => void;
 }) {
   const [name, setName] = useState("");
   const [color, setColor] = useState("#438470");
@@ -2068,14 +2265,7 @@ function LabelManager({
               aria-label={`${l.name}: etiketi sil`}
               title="Seçim listesinden kaldır; görevler korunur"
               disabled={pending}
-              onClick={async () => {
-                setPending(true);
-                try {
-                  await onDelete(l.name);
-                } finally {
-                  setPending(false);
-                }
-              }}
+              onClick={() => onDelete(l.name)}
             >
               <Trash2 size={14} />
             </button>
@@ -2086,5 +2276,180 @@ function LabelManager({
         Yeni görevde farklı bir etiket yazmak da etiketi otomatik oluşturur.
       </small>
     </section>
+  );
+}
+
+function PriorityStars({
+  title,
+  value,
+  onChange,
+  readOnly = false,
+  disabled = false,
+}: {
+  title: string;
+  value: number;
+  onChange?: (rating: number) => void;
+  readOnly?: boolean;
+  disabled?: boolean;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const preview = hover ?? value;
+  if (readOnly)
+    return value > 0 ? (
+      <span
+        className="priority-readonly"
+        aria-label={`${title}: ${value} yıldız öncelik`}
+      >
+        {Array.from({ length: 5 }, (_, i) => (
+          <Star key={i} size={12} className={i < value ? "lit" : ""} />
+        ))}
+      </span>
+    ) : null;
+  return (
+    <div
+      className="star-rating"
+      role="radiogroup"
+      aria-label={`${title}: öncelik`}
+      onMouseLeave={() => setHover(null)}
+    >
+      {[1, 2, 3, 4, 5].map((star) => (
+        <button
+          key={star}
+          type="button"
+          role="radio"
+          aria-checked={value === star}
+          aria-label={`${title}: ${star} yıldız`}
+          title={`${star} yıldız öncelik`}
+          tabIndex={star === (value || 1) ? 0 : -1}
+          disabled={disabled}
+          className={`star-button ${star <= preview ? "lit" : ""} ${hover !== null ? "preview" : ""}`}
+          style={{ animationDelay: `${star * 25}ms` }}
+          onMouseEnter={() => setHover(star)}
+          onFocus={() => setHover(star)}
+          onBlur={() => setHover(null)}
+          onClick={() => {
+            setHover(null);
+            onChange?.(star);
+          }}
+          onKeyDown={(e) => {
+            const next =
+              e.key === "ArrowRight" || e.key === "ArrowUp"
+                ? Math.min(5, star + 1)
+                : e.key === "ArrowLeft" || e.key === "ArrowDown"
+                  ? Math.max(1, star - 1)
+                  : e.key === "Home"
+                    ? 1
+                    : e.key === "End"
+                      ? 5
+                      : null;
+            if (next !== null) {
+              e.preventDefault();
+              (
+                e.currentTarget.parentElement?.children[next - 1] as HTMLElement
+              )?.focus();
+              onChange?.(next);
+            }
+          }}
+        >
+          <Star size={15} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  title,
+  message,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  message: string;
+  error: string;
+  onCancel: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const [pending, setPending] = useState(false);
+  const dialog = useRef<HTMLElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    cancel.current?.focus();
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (!pending) onCancel();
+      }
+      if (e.key === "Tab") {
+        const items = [
+          ...(dialog.current?.querySelectorAll<HTMLButtonElement>(
+            "button:not(:disabled)",
+          ) || []),
+        ];
+        const index = items.indexOf(
+          document.activeElement as HTMLButtonElement,
+        );
+        if (
+          items.length &&
+          ((e.shiftKey && index <= 0) ||
+            (!e.shiftKey && index === items.length - 1))
+        ) {
+          e.preventDefault();
+          (e.shiftKey ? items[items.length - 1] : items[0]).focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", handler, true);
+    return () => {
+      document.removeEventListener("keydown", handler, true);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [onCancel, pending]);
+  return (
+    <div
+      className="modal-overlay confirm-overlay"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget && !pending) onCancel();
+      }}
+    >
+      <section
+        className="modal confirm-modal"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+        aria-describedby="confirm-message"
+        ref={dialog}
+      >
+        <h2 id="confirm-title">{title}</h2>
+        <p id="confirm-message">{message}</p>
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="confirm-actions">
+          <button ref={cancel} disabled={pending} onClick={onCancel}>
+            Vazgeç
+          </button>
+          <button
+            className="danger-confirm"
+            disabled={pending}
+            onClick={async () => {
+              setPending(true);
+              try {
+                await onConfirm();
+              } finally {
+                setPending(false);
+              }
+            }}
+          >
+            {pending ? "İşleniyor…" : "Evet, onayla"}
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }

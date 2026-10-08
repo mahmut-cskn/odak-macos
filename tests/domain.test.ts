@@ -206,3 +206,33 @@ describe("daily focus trend", () => {
     expect(JSON.stringify(sessions)).toBe(before);
   });
 });
+
+describe("past planning and optional priority", () => {
+  it("preserves unchanged history but rejects new past dates and times", async () => {
+    const { validatePlanningChange, isPastTask } =
+      await import("../src/domain");
+    const old = newTask("2026-10-07");
+    old.title = "History";
+    const now = new Date("2026-10-08T14:30:30").getTime();
+    expect(
+      validatePlanningChange(old, undefined, "2026-10-08", now),
+    ).toBeTruthy();
+    expect(validatePlanningChange(old, old, "2026-10-08", now)).toBeNull();
+    expect(isPastTask(old, "2026-10-08")).toBe(true);
+    const today = { ...old, scheduledDate: "2026-10-08" };
+    expect(isPastTask(today, "2026-10-08")).toBe(false);
+    expect(validatePlanningChange(today, old, "2026-10-08", now)).toBeNull();
+    today.dueAt = now - 120000;
+    expect(validatePlanningChange(today, old, "2026-10-08", now)).toBeTruthy();
+  });
+  it("inherits recurring series priority until an instance is explicitly rated", async () => {
+    const { priorityFor } = await import("../src/domain");
+    const instance = newTask("2026-10-09");
+    instance.seriesId = "series";
+    const before = JSON.stringify(instance);
+    expect(priorityFor(instance, {})).toBe(0);
+    expect(priorityFor(instance, { series: 5 })).toBe(5);
+    expect(priorityFor(instance, { series: 5, [instance.id]: 2 })).toBe(2);
+    expect(JSON.stringify(instance)).toBe(before);
+  });
+});

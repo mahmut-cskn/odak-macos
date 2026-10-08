@@ -21,9 +21,9 @@ DMG indirmeleri için SHA-256 dosyası da aynı Release’te bulunur.
 
 ## Kullanım
 
-- **Bugün:** Günün gündemi ve sayaç. Görevin sağındaki ▶ ile ona bağlı oturum başlat veya sayaçtan bir görev seç. **Yeni görevle başla** önce adı olan bir görev oluşturur; görevsiz yeni odak başlatılamaz. Sayaçtaki görev adına tıklayınca yalnızca adını düzenlersin, süre etkilenmez.
+- **Bugün:** Günün gündemi ve sayaç. **Yeni görev** ile görev oluştur, sonra görevin sağındaki ▶ ile ona bağlı oturum başlat veya sayaçtan bir görev seç. Görevsiz yeni odak başlatılamaz. Sayaçtaki görev adına tıklayınca yalnızca adını düzenlersin, süre etkilenmez.
 - **Liste:** Tarih veya süre vermeden görev ekle. `…` menüsünden bugüne, yarına veya istediğin güne taşı.
-- **Takvim:** Ay görünümünde tekrarların gelecekteki günlerini de gör; bir gün seç; o günün görevlerini, geçmişte tamamlananlar dahil gör. **Bu güne görev ekle** ile ileri bir tarihe plan yap.
+- **Takvim:** Ay görünümünde tekrarların gelecekteki günlerini de gör; bir gün seç; o günün görevlerini, geçmişte tamamlananlar dahil gör. Geçmiş günler salt okunurdur: görev oluşturulamaz, değiştirilemez veya pomodoro başlatılamaz. **Bu güne görev ekle** ile bugün veya ileri bir tarihe plan yap. Sayaç paneli Bugün ve Liste’de görünür; diğer sekmelere geçmek çalışan sayacı etkilemez.
 - **Tamamlanan:** Görevin solundaki yuvarlakla tamamla. Buradaki ✓ yuvarlağına yeniden basınca görev eski gününe/listesine geri döner. **Biten odak oturumları** altında eski görevsiz oturumlar dahil çalışma geçmişini de görürsün; oturum bitmesi görevi tamamlamaz.
 - **Ayarlar:** Çalışma **1–90 dakika**, mola **1–30 dakika**; varsayılan **45/15**. Serbest giriş vardır, hazır süre ön ayarları yoktur.
 
@@ -31,12 +31,15 @@ DMG indirmeleri için SHA-256 dosyası da aynı Release’te bulunur.
 
 **Duraklat / Devam et** kalan süreyi korur. **İptal et** yalnızca o anki oturumu siler, hiçbir süre eklemez; önceden bitmiş oturumlar korunur. Çalışma bitince mola başlar; mola sonunda **Devam et** veya **5 dk daha** seçersin. Uygulamanın penceresini kapatmak sayacı durdurmaz. Menü çubuğundan **Çık** ile tamamen kapatsan bile tekrar açıldığında sayaç kayıtlı zaman damgasından hesaplanır. Uygulama tamamen kapalıyken bildirim gönderilemez; açılınca süresi geçen oturumlar kaydedilir.
 
+Görev, seri, alt görev veya etiket silme; oturum iptali ve JSON ile verileri değiştirme işlemleri önce onay ister. **Vazgeç** hiçbir değişiklik yapmaz.
+
 ## Planlama ve ek özellikler
 
 - Süresiz görev, tahmini süre, son bitirme zamanı ve tarih + saat aralığı desteklenir.
 - Saat aralıklı görevler başlamadan **15 dakika önce** sistem bildirimi gelir; bu süre ayarlardan değiştirilir. Başlangıç saati geçip bitişi henüz gelmemiş bir hatırlatma uygulama yeniden açıldığında gönderilir.
 - Etiket ve renk seç. Ayarlar’dan etiket oluştur veya seçim listesinden sil; silme mevcut görevlerin etiketini veya rengini değiştirmez. Yeni bir etiket yazınca otomatik oluşturma devam eder. Seçilen etiketin rengi yeni görev için varsayılandır; renk düzenleme diğer görevleri değiştirmez. Liste, Bugün, Tamamlanan ve Takvim’de etiket filtresi kullan.
 - Günlük, seçili haftalık günler ve aylık tekrarlar vardır. Her günün örneği bağımsızdır; birini tamamlamak seriyi bitirmez. Aylık 31 gibi bir tarih olmayan aylarda atlanır. Seriyi Liste’nin altından düzenle. Seri düzenlemeleri gelecekteki başlanmamış örneklere uygulanır; tamamlananlar ve süre harcanmış örnekler korunur. Seriyi silmek gelecekteki başlanmamış örnekleri de kaldırır.
+- Görevlere isteğe bağlı **1–5 yıldız öncelik** ver. Üzerine geldiğin yıldıza kadar yıldızlar parlar; tıklayınca kaydedilir. Bugün ve Liste’de görevleri önceliğe göre sıralayabilirsin. Tekrarlayan görevlerin etiketleri aynı belirgin renkli rozetleri kullanır; serinin önceliği, ayrıca değiştirilmemiş günlük örneklere uygulanır. Geçmiş takvimde yıldızlar yalnızca görüntülenir.
 - Göreve not ve alt görev ekle. Gün seçimi isteğe bağlıdır; alt görevler ana görevin gününü kullanır. Tekrar için gün zorunlu olduğunda seçili takvim günü (Liste’de bugün) hazır gelir. Zorunlu alanlarda hafif kırmızı kenarlık vardır. Alt görevlerin hepsi bitince ana görevi tamamlaman önerilir; otomatik tamamlanmaz.
 - İstatistik simgesinden günlük/haftalık odak süresi, haftalık çubuklar ve etiket dağılımını gör. Ek olarak son 14 günün çizgi grafiğindeki noktalara tıklayıp önceki güne göre artış/azalışı karşılaştır.
 - Varsayılan **⌘⇧K** global kısayolu küçük bir hızlı ekleme penceresi açar. Başlığı yazıp **Enter** ile tarihsiz listeye kaydet; **Esc** ile kapat. Kısayol ayarlardan değiştirilir.
@@ -54,15 +57,15 @@ SQLite dosyası `~/Library/Application Support/com.mahmutcskn.odak/odak.sqlite3`
 
 **Ayarlar → JSON dışa aktar** tüm veriyi tek dosyaya kaydeder. **JSON içe aktar** mevcut verilerin yerini seçtiğin yedekle değiştirir; önce otomatik `recovery-….json` kurtarma yedeği alınır. Çalışan/duraklatılmış sayacı içe aktarmadan önce iptal et. Aktif sayaç dışa aktarılabilir. Yedekler görev notlarını da içerdiğinden dosyanı güvenli bir yerde tut.
 
-Etiket seçim listesi `labels.json` dosyasında ayrıca saklanır; mevcut SQLite şeması ve eski görev kayıtları için dönüşüm yapılmaz. JSON dışa aktarma görevleri/oturumları/sayacı/ayarları içerir; ayrı etiket seçim listesi Drive ZIP yedeğinde de bulunur.
+Etiket seçim listesi `labels.json`, yıldız öncelikleri `priorities.json` dosyasında ayrıca saklanır; mevcut SQLite şeması ve eski görev kayıtları için dönüşüm yapılmaz. JSON dışa aktarma görevleri/oturumları/sayacı/ayarları içerir; iki ayrı tercih dosyası Drive ZIP yedeğinde de bulunur.
 
 ### İsteğe bağlı günlük Google Drive yedeği
 
-[Kurulum ve geri yükleme](docs/DRIVE_BACKUP.md). Yardımcı Odak’tan ayrı bir macOS LaunchAgent’tır; uygulamanın içinde ağ bağlantısı veya giriş ekranı yoktur. Mevcut Obsidian yedekleme iznini kullanabilir. Her gün **23:55**’te salt okunur SQLite bağlantısıyla tutarlı bir kopya alır ve Drive’daki **Odak** klasörüne ZIP gönderir. Çalışan sayacı kapatmaz veya değiştirmez. Uyku/çevrimdışı durumunda saatlik kontrolde tekrar denenir. ZIP içinde tek dosyalı SQLite, içe aktarılabilir JSON ve varsa etiket seçim listesi bulunur. Eski yedekler otomatik silinmez.
+[Kurulum ve geri yükleme](docs/DRIVE_BACKUP.md). Yardımcı Odak’tan ayrı bir macOS LaunchAgent’tır; uygulamanın içinde ağ bağlantısı veya giriş ekranı yoktur. Mevcut Obsidian yedekleme iznini kullanabilir. Her gün **23:55**’te salt okunur SQLite bağlantısıyla tutarlı bir kopya alır ve Drive’daki **Odak** klasörüne ZIP gönderir. Çalışan sayacı kapatmaz veya değiştirmez. Uyku/çevrimdışı durumunda saatlik kontrolde tekrar denenir. ZIP içinde tek dosyalı SQLite, içe aktarılabilir JSON ve varsa etiket seçim listesi ile yıldız öncelikleri bulunur. Eski yedekler otomatik silinmez.
 
 ### Çalışan sayaç sırasında sürüm güncellemesi
 
-Yeni DMG’yi sayaç çalışırken mevcut uygulamanın üzerine kurma. Oturumunu bitir, menü çubuğundan **Çık** seç, sonra yeni paketi Applications’a sürükle. Uygulama verileri ayrı app-data klasöründe kalır; v1.2.0 için şema değişikliği veya eski görev dönüştürmesi yoktur.
+Yeni DMG’yi sayaç çalışırken mevcut uygulamanın üzerine kurma. Oturumunu bitir, menü çubuğundan **Çık** seç, sonra yeni paketi Applications’a sürükle. Uygulama verileri ayrı app-data klasöründe kalır; v1.3.0 için şema değişikliği veya eski görev dönüştürmesi yoktur.
 
 ![Odak istatistikleri](docs/screenshot-stats.png)
 

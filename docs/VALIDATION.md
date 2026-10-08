@@ -72,3 +72,16 @@ Yerel entegrasyon: başka Odak süreci kapalıyken `npm run tauri build -- --deb
 - Son v1.2.0 universal DMG `hdiutil verify` kontrolünü geçti; `lipo` arm64 + x86_64 gösterdi ve ad-hoc imza `codesign --verify --deep --strict` ile doğrulandı. SHA-256 dosyası pakete eşlik ediyor.
 - Drive’daki gerçek ZIP’in MD5 sağlama toplamı yerel kopyayla birebir eşleşti; günlük LaunchAgent ilk çalışmadan `exit code=0` ile çıktı ve 23:55 + 3600 saniyelik tetikleri doğrulandı.
 - `cargo clippy --all-targets --locked -- -D warnings` temiz. Toplam 46 otomatik test geçti.
+
+## v1.3.0 — onaylı silme, geçmiş ve öncelik
+
+- 15 TypeScript domain testi, 21 Rust testi, 16 Chromium UI testi ve 4 Python yedekleme testi geçti: toplam 56. `cargo clippy --all-targets --locked -- -D warnings` temiz.
+- Tek görev oluşturma yolu ve yalnızca Bugün/Liste’de görünen sayaç doğrulandı. Çalışan sayaç sekme değişimlerinde aynı kalıyor.
+- Geçmiş takvimde oluşturma, düzenleme, tamamlama, alt görev değiştirme ve odak başlatma kapalı; geçmiş gün görüntülemek `ensure_day` çağırmıyor. Native komut da geçmişe örnek üretmeden dönüyor. Eski tarih alanları dönüştürülmüyor.
+- Görev, alt görev, etiket, seri ve oturum silme/iptal ile JSON içe aktarma onayları test edildi. Vazgeçmek veri değiştirmiyor; Escape alttaki görev düzenleyiciyi kapatmıyor. Native komutlar onaysız silme/iptali reddediyor.
+- Yıldızlarda hover, 1–5 seçimi, klavye kullanımı, öncelik sıralaması, seri mirası ve yeniden başlatmada kalıcılık test edildi. Öncelik kaydetmek tüm görev/oturum/sayaç yüklerini birebir koruyor; yalnızca ayrı tercih dosyasını değiştiriyor.
+- Tekrarlayan görev rozetleri normal görevlerle aynı `.label-tag` görünümünü kullanıyor. [Öncelik görünümü](screenshot-priority.png) ve [salt okunur geçmiş](screenshot-history.png) izole örneklerle görüntülendi.
+- Gerçek macOS bildirimleri, iki ses, global kısayol, SQLite işlemleri ve JSON kurtarma kopyası izole native paketle doğrulandı. [Native sonuç](native-test-v1.3.0.json). Gerçek süreç çıkışı ve yeniden açılış sayacı korudu. [Yeniden başlatma](native-restart-v1.3.0.json).
+- Güncellemeden önce 47 görev ve 3 oturum içeren ek Drive ZIP yedeği başarıyla gönderildi. Yardımcı artık varsa yıldız önceliklerini de ZIP’e koyuyor; açık WAL veritabanı testi bu dosyayı doğruluyor.
+- Universal DMG CRC kontrolünü geçti; kurulu paket DMG’deki çalıştırılabilirle birebir aynı. `lipo` x86_64 + arm64 gösteriyor ve `codesign --verify --deep --strict` başarılı.
+- `/Applications/Odak.app` v1.3.0 kuruldu ve normal kullanıcı verisiyle açıldı. Salt okunur SQLite kontrolü, önce/sonra 47 görevin, 3 oturumun ve idle sayaç kaydının birebir aynı olduğunu doğruladı; `quick_check=ok`. Gerçek görev içerikleri test raporlarına veya GitHub’a yazılmadı.

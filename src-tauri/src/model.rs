@@ -167,6 +167,7 @@ pub struct Snapshot {
     pub database_path: String,
     pub service_error: Option<String>,
     pub labels: Vec<crate::labels::Label>,
+    pub priorities: std::collections::BTreeMap<String, u8>,
 }
 
 pub fn validate_settings(s: &Settings) -> Result<(), String> {
@@ -441,11 +442,84 @@ pub fn validate_focus_task(data: &Data, id: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn validate_planning_change(
+    task: &Task,
+    previous: Option<&Task>,
+    now: DateTime<Local>,
+) -> Result<(), String> {
+    let today = now.date_naive().to_string();
+    if task
+        .scheduled_date
+        .as_ref()
+        .is_some_and(|date| date < &today)
+        && previous.is_none_or(|old| old.scheduled_date != task.scheduled_date)
+    {
+        return Err("Geçmiş bir güne görev planlanamaz. Bugünü veya ileri bir günü seçin.".into());
+    }
+    let minute = now.timestamp_millis() / 60_000 * 60_000;
+    for (value, old) in [
+        (task.start_at, previous.and_then(|p| p.start_at)),
+        (task.end_at, previous.and_then(|p| p.end_at)),
+        (task.due_at, previous.and_then(|p| p.due_at)),
+    ] {
+        if value.is_some_and(|time| time < minute) && (previous.is_none() || value != old) {
+            return Err("Geçmiş bir saate yeni görev planlanamaz.".into());
+        }
+    }
+    Ok(())
+}
+pub fn validate_focus_start(data: &Data, id: &str, today: NaiveDate) -> Result<(), String> {
+    validate_focus_task(data, id)?;
+    let task = data.tasks.iter().find(|t| t.id == id).unwrap();
+    let date = task.scheduled_date.clone().or_else(|| {
+        task.due_at.and_then(|ms| {
+            Local
+                .timestamp_millis_opt(ms)
+                .single()
+                .map(|d| d.date_naive().to_string())
+        })
+    });
+    if date.is_some_and(|date| date < today.to_string()) {
+        return Err("Geçmiş günün görevinde pomodoro başlatılamaz. Görevi bugüne veya ileri bir güne taşıyın.".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     fn task() -> Task {
         serde_json::from_value(serde_json::json!({"id":"task","title":"Task","label":"İş","color":"#438470","notes":"","status":"active","completedAt":null,"estimateMin":null,"scheduledDate":"2026-10-01","startAt":null,"endAt":null,"dueAt":null,"recurrenceRule":null,"seriesId":null,"subtasks":[],"createdAt":0})).unwrap()
+    }
+    #[test]
+    fn past_planning_is_blocked_without_rewriting_existing_history() {
+        let now = Local
+            .with_ymd_and_hms(2026, 10, 8, 14, 30, 30)
+            .single()
+            .unwrap();
+        let old = task();
+        assert!(validate_planning_change(&old, None, now).is_err());
+        assert!(validate_planning_change(&old, Some(&old), now).is_ok());
+        let mut changed = old.clone();
+        changed.scheduled_date = Some("2026-10-07".into());
+        assert!(validate_planning_change(&changed, Some(&old), now).is_err());
+        changed.scheduled_date = Some("2026-10-08".into());
+        assert!(validate_planning_change(&changed, Some(&old), now).is_ok());
+        changed.start_at = Some(now.timestamp_millis() - 120000);
+        assert!(validate_planning_change(&changed, Some(&old), now).is_err());
+        changed.start_at = Some(now.timestamp_millis() + 120000);
+        assert!(validate_planning_change(&changed, Some(&old), now).is_ok());
+    }
+    #[test]
+    fn focus_allows_today_future_and_undated_but_rejects_past_day() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 8).unwrap();
+        let mut data = Data::default();
+        data.tasks.push(task());
+        assert!(validate_focus_start(&data, "task", today).is_err());
+        for day in [Some("2026-10-08".into()), Some("2026-10-09".into()), None] {
+            data.tasks[0].scheduled_date = day;
+            assert!(validate_focus_start(&data, "task", today).is_ok());
+        }
     }
     #[test]
     fn pause_restart_and_cancel_credit_nothing() {

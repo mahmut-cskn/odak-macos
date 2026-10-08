@@ -24,3 +24,9 @@
 - Dates remain optional; recurrence fills a required day from the selected calendar day or today, and checklist subtasks inherit their parent day without adding persisted date fields.
 - Optional daily Drive backups run outside the offline app at 23:55 with hourly sleep/offline catch-up, use the existing Obsidian Drive authorization and never overwrite its token.
 - Drive backups use SQLite online backup through a read-only source connection, include SQLite/JSON/catalog, retain prior backups, and never restart or mutate the source app or timer.
+- v1.3.0 removes the redundant timer creation button; task creation stays in the existing New Task entry point and the timer card appears only in Today and List.
+- Every user-facing deletion, session cancellation, recurrence removal and destructive import requires explicit confirmation before the action is dispatched; native deletion commands reject missing confirmation.
+- Past calendar days are read-only and never materialize missing historical recurrence instances; new or changed past planning is rejected while existing historical values remain intact.
+- Task priorities are optional 1–5 stars stored atomically in independent priorities.json preferences; existing SQLite/task/session/timer payloads are never migrated or backfilled.
+- Recurrence instances inherit the series priority until explicitly rated; default task ordering remains unchanged unless the user selects priority sorting.
+- Drive ZIP backups include both labels.json and priorities.json when present; JSON database import/export keeps its existing schema.

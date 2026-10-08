@@ -1,0 +1,16 @@
+{
+  "checks": [
+    "Priority preferences preserve task/timer payloads; unconfirmed deletions rejected",
+    "Create, start, pause, SQLite reload, resume and cancel without credit",
+    "Rust work deadline credits exactly one minute and never completes task",
+    "Native work/break notifications and two synthesized tones; five-minute break extension",
+    "Manual completion and undo preserve the original scheduled day",
+    "Settings validation, quiet mode and native global shortcut re-registration",
+    "Native scheduled reminder at the configured lead time; persisted deduplication",
+    "Backup schema validates real native data",
+    "Real macOS tray exists; hiding and reopening the WebView preserves app state",
+    "Native JSON file export/import, active-timer guard and automatic recovery backup",
+    "Leave a real persisted work timer running for the process-restart check"
+  ],
+  "passed": true
+}

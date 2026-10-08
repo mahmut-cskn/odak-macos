@@ -1,6 +1,7 @@
 mod labels;
 mod model;
 mod notifications;
+mod priorities;
 #[cfg(debug_assertions)]
 mod smoke;
 mod sound;
@@ -24,6 +25,7 @@ struct Core {
     path: PathBuf,
     service_error: Option<String>,
     labels: labels::Catalog,
+    priorities: priorities::Priorities,
 }
 impl Core {
     fn snapshot(&self) -> Snapshot {
@@ -36,6 +38,7 @@ impl Core {
             database_path: self.path.to_string_lossy().into(),
             service_error: self.service_error.clone(),
             labels: self.labels.available(&self.data.tasks),
+            priorities: self.priorities.0.clone(),
         }
     }
     fn commit(&mut self, next: Data) -> Result<(), String> {
@@ -109,6 +112,11 @@ fn execute(
     action: String,
     payload: Value,
 ) -> Result<Snapshot, String> {
+    if matches!(action.as_str(), "delete_task" | "delete_label" | "cancel")
+        && payload["confirmed"].as_bool() != Some(true)
+    {
+        return Err("Silme işlemi için önce onay verin.".into());
+    }
     // OS services may marshal onto the main thread; never hold the database lock here.
     let incoming_settings = if action == "settings" {
         let settings: Settings =
@@ -127,6 +135,33 @@ fn execute(
         None
     };
     let mut core = state.0.lock().map_err(|e| e.to_string())?;
+    if action == "set_priority" {
+        let id = payload["id"].as_str().ok_or("Görev bulunamadı.")?;
+        if !core.data.tasks.iter().any(|t| t.id == id) {
+            return Err("Görev bulunamadı.".into());
+        }
+        let rating = payload["rating"]
+            .as_u64()
+            .filter(|r| (1..=5).contains(r))
+            .ok_or("Öncelik 1–5 yıldız arasında olmalı.")?;
+        let path = core.path.with_file_name("priorities.json");
+        let mut priorities = priorities::Priorities::load(&path)?;
+        priorities.set(id, rating as u8)?;
+        priorities.save(&path)?;
+        core.priorities = priorities;
+        let snapshot = core.snapshot();
+        drop(core);
+        let _ = app.emit("data-changed", ());
+        return Ok(snapshot);
+    }
+    // Past calendar reads never generate or persist new historical instances.
+    if action == "ensure_day"
+        && payload["date"]
+            .as_str()
+            .is_some_and(|date| date < Local::now().date_naive().to_string().as_str())
+    {
+        return Ok(core.snapshot());
+    }
     // Catalog edits only touch labels.json, never task/session/timer rows.
     if action == "save_label" || action == "delete_label" {
         let name = payload["name"].as_str().ok_or("Etiket adı gerekli.")?;
@@ -156,6 +191,11 @@ fn execute(
             let mut task: Task = serde_json::from_value(payload).map_err(|e| e.to_string())?;
             task.title = task.title.trim().into();
             validate_task(&task)?;
+            validate_planning_change(
+                &task,
+                next.tasks.iter().find(|old| old.id == task.id),
+                Local::now(),
+            )?;
             if core.labels.hidden.contains(&task.label) {
                 let path = core.path.with_file_name("labels.json");
                 let mut catalog = labels::Catalog::load(&path)?;
@@ -228,7 +268,7 @@ fn execute(
             let id = payload["taskId"]
                 .as_str()
                 .ok_or("Önce adı olan bir görev seçin.")?;
-            validate_focus_task(&next, id)?;
+            validate_focus_start(&next, id, Local::now().date_naive())?;
             let task = Some(id.to_string());
             next.timer.work_min = work as u32;
             next.timer.break_min = rest as u32;
@@ -246,7 +286,7 @@ fn execute(
                 .task_id
                 .as_deref()
                 .ok_or("Yeni odak oturumu için bir görev seçin.")?;
-            validate_focus_task(&next, id)?;
+            validate_focus_start(&next, id, Local::now().date_naive())?;
             let task = Some(id.to_string());
             next.timer.begin(task, "work", next.timer.work_min, now);
         }
@@ -435,7 +475,10 @@ async fn export_backup(app: tauri::AppHandle) -> Result<Option<String>, String> 
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-async fn import_backup(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn import_backup(app: tauri::AppHandle, confirmed: bool) -> Result<Option<String>, String> {
+    if !confirmed {
+        return Err("Mevcut verilerin değiştirilmesi için önce onay verin.".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let Some(file) = choose_backup_file(false) else {
             return Ok(None);
@@ -623,6 +666,8 @@ pub fn run() {
             let data = storage::load(&conn).map_err(std::io::Error::other)?;
             let labels =
                 labels::Catalog::load(&dir.join("labels.json")).map_err(std::io::Error::other)?;
+            let priorities = priorities::Priorities::load(&dir.join("priorities.json"))
+                .map_err(std::io::Error::other)?;
             let service_error = synchronize_services(app.handle(), None, &data.settings).err();
             app.manage(AppState(Mutex::new(Core {
                 conn,
@@ -630,6 +675,7 @@ pub fn run() {
                 path,
                 service_error,
                 labels,
+                priorities,
             })));
             let open = MenuItem::with_id(app, "open", "Odak’ı aç", true, None::<&str>)?;
             let quick = MenuItem::with_id(app, "quick", "Hızlı görev ekle", true, None::<&str>)?;

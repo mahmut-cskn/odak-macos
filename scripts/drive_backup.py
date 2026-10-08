@@ -93,10 +93,11 @@ def create_archive(source, destination, now):
             with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED) as archive:
                 archive.write(snapshot, "odak.sqlite3")
                 archive.writestr("odak-yedek.json", json.dumps(envelope, ensure_ascii=False, indent=2))
-                catalog = source.with_name("labels.json")
-                if catalog.is_file():
-                    archive.writestr("labels.json", catalog.read_bytes())
-                archive.writestr("GERI-YUKLEME.txt", "ZIP'i açın. Odak'ta Ayarlar > JSON içe aktar ile odak-yedek.json dosyasını seçin.\nSayaç çalışırken geri yükleme yapılamaz. Mevcut veriler önce kurtarma kopyasına alınır.\nSQLite alternatifidir; canlı veritabanının üzerine kopyalamayın.\nEtiket seçim listesi labels.json dosyasında ayrı tutulur.\n")
+                for name in ("labels.json", "priorities.json"):
+                    preference = source.with_name(name)
+                    if preference.is_file():
+                        archive.writestr(name, preference.read_bytes())
+                archive.writestr("GERI-YUKLEME.txt", "ZIP'i açın. Odak'ta Ayarlar > JSON içe aktar ile odak-yedek.json dosyasını seçin.\nSayaç çalışırken geri yükleme yapılamaz. Mevcut veriler önce kurtarma kopyasına alınır.\nSQLite alternatifidir; canlı veritabanının üzerine kopyalamayın.\nEtiket seçim listesi labels.json, yıldız öncelikleri priorities.json dosyasında ayrı tutulur.\n")
             os.chmod(part, 0o600)
             os.replace(part, destination)
         finally:

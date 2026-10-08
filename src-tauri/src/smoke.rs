@@ -68,7 +68,7 @@ fn restore_checks(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
         app.clone(),
         app.state::<AppState>(),
         "cancel".into(),
-        json!({}),
+        json!({"confirmed":true}),
     )?;
     let after = snapshot(app.state::<AppState>())?;
     if after.data.sessions.len() != before.data.sessions.len() {
@@ -87,6 +87,21 @@ fn checks(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
     let task:Task=serde_json::from_value(json!({"id":"native-task","title":"Yerel doğrulama","label":"Test","color":"#438470","notes":"Native SQLite test","status":"active","completedAt":null,"estimateMin":480,"scheduledDate":Local::now().date_naive().to_string(),"startAt":null,"endAt":null,"dueAt":null,"recurrenceRule":null,"seriesId":null,"subtasks":[],"createdAt":Local::now().timestamp_millis()})).unwrap();
     invoke("save_task", serde_json::to_value(&task).unwrap())?;
     invoke("start", json!({"taskId":task.id,"workMin":1,"breakMin":1}))?;
+    let before_priority = snapshot(app.state::<AppState>())?;
+    invoke("set_priority", json!({"id":task.id,"rating":4}))?;
+    let after_priority = snapshot(app.state::<AppState>())?;
+    if serde_json::to_value(&before_priority.data).unwrap()
+        != serde_json::to_value(&after_priority.data).unwrap()
+        || after_priority.priorities.get(&task.id) != Some(&4)
+    {
+        return Err("Priority edit modified existing tasks or timer".into());
+    }
+    if invoke("delete_task", json!({"id":task.id})).is_ok() || invoke("cancel", json!({})).is_ok() {
+        return Err("Deletion accepted without confirmation".into());
+    }
+    result.push(
+        "Priority preferences preserve task/timer payloads; unconfirmed deletions rejected".into(),
+    );
     invoke("pause", json!({}))?;
     {
         let state = app.state::<AppState>();
@@ -102,7 +117,7 @@ fn checks(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
         }
     }
     invoke("resume", json!({}))?;
-    invoke("cancel", json!({}))?;
+    invoke("cancel", json!({"confirmed":true}))?;
     if !snapshot(app.state::<AppState>())?.data.sessions.is_empty() {
         return Err("Cancel wrote a session".into());
     }
@@ -145,7 +160,7 @@ fn checks(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
     if snapshot(app.state::<AppState>())?.data.timer.planned_min != 5 {
         return Err("Break extension failed".into());
     }
-    invoke("cancel", json!({}))?;
+    invoke("cancel", json!({"confirmed":true}))?;
     result.push(
         "Native work/break notifications and two synthesized tones; five-minute break extension"
             .into(),
@@ -230,14 +245,14 @@ fn checks(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
         PathBuf::from(std::env::var("ODAK_SMOKE_DIR").unwrap()).join("roundtrip.json");
     std::env::set_var("ODAK_SMOKE_BACKUP_FILE", &backup_file);
     tauri::async_runtime::block_on(export_backup(app.clone()))?;
-    if tauri::async_runtime::block_on(import_backup(app.clone())).is_ok() {
+    if tauri::async_runtime::block_on(import_backup(app.clone(), true)).is_ok() {
         return Err("Import accepted an active timer".into());
     }
-    invoke("cancel", json!({}))?;
+    invoke("cancel", json!({"confirmed":true}))?;
     let mut edited = task.clone();
     edited.notes = "Changed after backup".into();
     invoke("save_task", serde_json::to_value(edited).unwrap())?;
-    let recovery = tauri::async_runtime::block_on(import_backup(app.clone()))?
+    let recovery = tauri::async_runtime::block_on(import_backup(app.clone(), true))?
         .ok_or("Import produced no recovery backup")?;
     let prior: Backup =
         serde_json::from_slice(&std::fs::read(recovery).map_err(|e| e.to_string())?)

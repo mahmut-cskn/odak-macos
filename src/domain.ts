@@ -71,6 +71,7 @@ export interface Snapshot {
   databasePath: string;
   serviceError: string | null;
   labels?: LabelEntry[];
+  priorities?: Record<string, number>;
 }
 export const defaultSettings: Settings = {
   defaultWorkMin: 45,
@@ -258,4 +259,40 @@ export function dailyTrend(sessions: Session[], today = dayKey(), count = 14) {
       delta: minutes - (totals[shiftDay(date, -1)] || 0),
     };
   });
+}
+
+export function isPastTask(task: Task, today = dayKey()) {
+  const date =
+    task.scheduledDate || (task.dueAt ? dayKey(new Date(task.dueAt)) : null);
+  return !!date && date < today;
+}
+export function priorityFor(task: Task, priorities: Record<string, number>) {
+  return (
+    priorities[task.id] ??
+    (task.seriesId ? priorities[task.seriesId] : undefined) ??
+    0
+  );
+}
+export function validatePlanningChange(
+  task: Task,
+  previous?: Task,
+  today = dayKey(),
+  now = Date.now(),
+) {
+  if (
+    task.scheduledDate &&
+    task.scheduledDate < today &&
+    (!previous || previous.scheduledDate !== task.scheduledDate)
+  )
+    return "Geçmiş bir güne görev planlanamaz. Bugünü veya ileri bir günü seç.";
+  const minute = Math.floor(now / 60000) * 60000;
+  for (const key of ["startAt", "endAt", "dueAt"] as const) {
+    if (
+      task[key] !== null &&
+      task[key]! < minute &&
+      (!previous || task[key] !== previous[key])
+    )
+      return "Geçmiş bir saate yeni görev planlanamaz.";
+  }
+  return null;
 }
