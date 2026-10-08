@@ -117,7 +117,7 @@ export const spent = (taskId: string, sessions: Session[]) =>
     .reduce((sum, s) => sum + s.actualMin, 0);
 export function newTask(date: string | null = null): Task {
   return {
-    id: crypto.randomUUID(),
+    id: newId(),
     title: "",
     label: "",
     color: "#438470",
@@ -220,3 +220,16 @@ export function calendarPreview(tasks: Task[], date: string) {
     }));
   return [...existing, ...projected];
 }
+
+// WKWebView on older supported macOS releases may not expose randomUUID or structuredClone.
+export function newId(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64;
+  bytes[8] = (bytes[8] & 63) | 128;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+export const cloneTask = (task: Task): Task => JSON.parse(JSON.stringify(task));

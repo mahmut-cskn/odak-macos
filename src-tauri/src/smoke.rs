@@ -34,7 +34,7 @@ pub fn start(app: tauri::AppHandle) {
             serde_json::to_vec_pretty(&report).unwrap(),
         );
         if let Some(w) = app.get_webview_window("main") {
-            let _=w.eval("window.__TAURI_INTERNALS__.invoke('smoke_report',{payload:{title:document.title,body:document.body.innerText,buttons:[...document.querySelectorAll('button')].map(x=>x.innerText),version:document.querySelector('.privacy-note')?.innerText}})");
+            let _ = w.eval(r#"document.querySelector('.add-button')?.click();setTimeout(()=>{window.__TAURI_INTERNALS__.invoke('smoke_report',{payload:{title:document.title,body:document.body.innerText,nativeTaskDialog:!!document.querySelector('[role=dialog]'),randomUUID:typeof crypto.randomUUID,isSecureContext:window.isSecureContext}});document.querySelector('.modal-heading button')?.click()},150)"#);
             thread::sleep(Duration::from_secs(1));
             let file =
                 CString::new(dir.join("native-ui.png").to_string_lossy().as_bytes()).unwrap();

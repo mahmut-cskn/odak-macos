@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   calendarPreview,
+  cloneTask,
+  newId,
   dayKey,
   formatMinutes,
   newTask,
@@ -120,5 +122,33 @@ describe("completion calendar history", () => {
     t.completedAt = new Date("2026-10-07T18:00:00").getTime();
     expect(tasksForDay([t], "2026-10-07")).toEqual([t]);
     expect(t.scheduledDate).toBeNull();
+  });
+});
+
+describe("older WebView compatibility", () => {
+  it("generates unique version-four UUIDs when randomUUID is unavailable", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(crypto, "randomUUID");
+    Object.defineProperty(crypto, "randomUUID", {
+      value: undefined,
+      configurable: true,
+    });
+    try {
+      const a = newId(),
+        b = newId();
+      expect(a).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+      expect(a).not.toBe(b);
+    } finally {
+      if (descriptor) Object.defineProperty(crypto, "randomUUID", descriptor);
+      else delete (crypto as any).randomUUID;
+    }
+  });
+  it("copies task notes and checklist without sharing nested state", () => {
+    const a = newTask();
+    a.subtasks = [{ id: "s", title: "Step", done: false }];
+    const b = cloneTask(a);
+    b.subtasks[0].done = true;
+    expect(a.subtasks[0].done).toBe(false);
   });
 });

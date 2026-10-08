@@ -32,6 +32,8 @@ import {
 import { action, call, load, subscribe } from "./api";
 import {
   calendarPreview,
+  cloneTask,
+  newId,
   clock,
   dayKey,
   formatMinutes,
@@ -630,7 +632,7 @@ export default function App() {
                     canStart={!active}
                     busy={busy}
                     onToggle={() => run("toggle_task", { id: task.id })}
-                    onEdit={() => setEditor(structuredClone(task))}
+                    onEdit={() => setEditor(cloneTask(task))}
                     onStart={() => start(task.id)}
                     onMove={(date) => move(task, date)}
                     onSubtask={(id, done) =>
@@ -680,7 +682,7 @@ export default function App() {
                     .map((t) => (
                       <button
                         key={t.id}
-                        onClick={() => setEditor(structuredClone(t))}
+                        onClick={() => setEditor(cloneTask(t))}
                       >
                         {t.title}
                         <span>
@@ -1340,7 +1342,7 @@ function TaskEditor({
                         subtasks: [
                           ...task.subtasks,
                           {
-                            id: crypto.randomUUID(),
+                            id: newId(),
                             title: subtask.trim(),
                             done: false,
                           },
@@ -1360,7 +1362,7 @@ function TaskEditor({
                       subtasks: [
                         ...task.subtasks,
                         {
-                          id: crypto.randomUUID(),
+                          id: newId(),
                           title: subtask.trim(),
                           done: false,
                         },

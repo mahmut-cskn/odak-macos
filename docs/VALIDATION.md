@@ -39,7 +39,7 @@ Yerel entegrasyon: başka Odak süreci kapalıyken `npm run tauri build -- --deb
 
 ## v1.1.0
 
-- 13 Rust testi, 10 TypeScript domain testi ve 6 Chromium UI testi geçti; `cargo clippy --all-targets -- -D warnings` temiz ve `npm audit` 0 açık.
+- 13 Rust testi, 12 TypeScript domain testi ve 6 Chromium UI testi geçti; `cargo clippy --all-targets -- -D warnings` temiz ve `npm audit` 0 açık.
 - Tekrar serisi düzenleme/silme testleri tamamlanan ve başlamış örneklerin geçmişini koruduğunu doğrular.
 - Etiket rengi tutarlılığı, lazy aylık takvim önizlemesi ve tarihsiz görevlerin tamamlandıkları gündeki takvim geçmişi test edildi.
 - JSON doğrulaması eksik göreve bağlı sayaç, geçersiz faz süresi, bilinmeyen şema ve imkânsız duraklama zamanı gibi bozuk yedekleri reddeder.
@@ -54,3 +54,5 @@ Yerel entegrasyon: başka Odak süreci kapalıyken `npm run tauri build -- --deb
 - İndirilen DMG’den `/Applications/Odak.app` kuruldu. Ad-hoc imza doğrulandı, `lipo` Intel + arm64 mimarilerini ve Info.plist `1.1.0` sürümünü gösterdi.
 - Kurulu uygulama açıldı; görünür 850×780 ana pencere ve Dock’u gizleyen Accessory politikası doğrulandı. Gerçek kullanıcı SQLite dosyası `integrity_check=ok`; native test verileri bu dosyaya yazılmadı.
 - Otomatik başlatma kaydı `/Applications/Odak.app/Contents/MacOS/odak` yolunu kullanır. Kurulum imajları çıkarıldı; uygulama kurulu kopyadan çalışır.
+
+- Eski WKWebView sürümleri için güvenli UUID geri dönüşü ve görev kopyalama testleri geçti. Yerel WebView’da Yeni görev diyaloğu gerçekten açıldı: [UI sonucu](native-ui-v1.1.0.json).

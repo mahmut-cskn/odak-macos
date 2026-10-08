@@ -14,3 +14,4 @@
 - Calendar month dots preview recurrence rules without creating SQLite records; selecting a day materializes that day lazily.
 - Colors belong to label names; changing a label color updates all tasks sharing that label.
 - Calendar history includes tasks on their scheduled day and actual completion day, including undated tasks, without changing their original placement.
+- Task IDs fall back to crypto.getRandomValues and task copying uses plain JSON to support older WKWebView versions on macOS 11.
