@@ -56,3 +56,4 @@ Yerel entegrasyon: başka Odak süreci kapalıyken `npm run tauri build -- --deb
 - Otomatik başlatma kaydı `/Applications/Odak.app/Contents/MacOS/odak` yolunu kullanır. Kurulum imajları çıkarıldı; uygulama kurulu kopyadan çalışır.
 
 - Eski WKWebView sürümleri için güvenli UUID geri dönüşü ve görev kopyalama testleri geçti. Yerel WebView’da Yeni görev diyaloğu gerçekten açıldı: [UI sonucu](native-ui-v1.1.0.json).
+- v1.1.0’ın son `0d83ea7` kaynak etiketi için [GitHub Actions universal yayın işi](https://github.com/mahmut-cskn/odak-macos/actions/runs/37772023472) başarılı tamamlandı; universal DMG ve eşleşen SHA-256 otomatik yayımlandı.
