@@ -1,5 +1,7 @@
 mod model;
 mod notifications;
+#[cfg(debug_assertions)]
+mod smoke;
 mod sound;
 mod storage;
 use chrono::{Local, NaiveDate};
@@ -65,6 +67,10 @@ fn synchronize_services(
                 .unregister(old.quick_add_shortcut.as_str());
         }
     }
+    #[cfg(debug_assertions)]
+    if smoke::enabled() {
+        return Ok(());
+    }
     let result = if new.launch_at_login {
         app.autolaunch().enable()
     } else {
@@ -81,13 +87,29 @@ fn snapshot(state: State<AppState>) -> Result<Snapshot, String> {
     let c = state.0.lock().map_err(|e| e.to_string())?;
     Ok(c.snapshot())
 }
-#[tauri::command]
-fn command(
+fn execute(
     app: tauri::AppHandle,
     state: State<AppState>,
     action: String,
     payload: Value,
 ) -> Result<Snapshot, String> {
+    // OS services may marshal onto the main thread; never hold the database lock here.
+    let incoming_settings = if action == "settings" {
+        let settings: Settings =
+            serde_json::from_value(payload.clone()).map_err(|e| e.to_string())?;
+        validate_settings(&settings)?;
+        let old = state
+            .0
+            .lock()
+            .map_err(|e| e.to_string())?
+            .data
+            .settings
+            .clone();
+        synchronize_services(&app, Some(&old), &settings)?;
+        Some(settings)
+    } else {
+        None
+    };
     let mut core = state.0.lock().map_err(|e| e.to_string())?;
     let mut next = core.data.clone();
     let now = Local::now().timestamp_millis();
@@ -192,10 +214,7 @@ fn command(
                 .begin(next.timer.task_id.clone(), "break", 5, now);
         }
         "settings" => {
-            let settings: Settings = serde_json::from_value(payload).map_err(|e| e.to_string())?;
-            validate_settings(&settings)?;
-            synchronize_services(&app, Some(&next.settings), &settings)?;
-            next.settings = settings;
+            next.settings = incoming_settings.unwrap();
             core.service_error = None;
         }
         "test_sound" => {
@@ -216,6 +235,18 @@ fn command(
     }
     let _ = app.emit("data-changed", ());
     Ok(snapshot)
+}
+#[tauri::command]
+async fn command(
+    app: tauri::AppHandle,
+    action: String,
+    payload: Value,
+) -> Result<Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        execute(app.clone(), app.state::<AppState>(), action, payload)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 fn notify_finish(app: &tauri::AppHandle, phase: &str) {
     let state = app.state::<AppState>();
@@ -338,7 +369,7 @@ async fn import_backup(app: tauri::AppHandle) -> Result<Option<String>, String> 
         }
         validate_backup(&backup.data)?;
         let state = app.state::<AppState>();
-        let mut core = state.0.lock().map_err(|e| e.to_string())?;
+        let core = state.0.lock().map_err(|e| e.to_string())?;
         if core.data.timer.phase != "idle" {
             return Err("İçe aktarmadan önce sayacı iptal edin.".into());
         }
@@ -356,7 +387,15 @@ async fn import_backup(app: tauri::AppHandle) -> Result<Option<String>, String> 
             .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        synchronize_services(&app, Some(&core.data.settings), &backup.data.settings)?;
+        let old_settings = core.data.settings.clone();
+        drop(core);
+        synchronize_services(&app, Some(&old_settings), &backup.data.settings)?;
+        let mut core = state.0.lock().map_err(|e| e.to_string())?;
+        if core.data.timer.phase != "idle" {
+            drop(core);
+            let _ = synchronize_services(&app, Some(&backup.data.settings), &old_settings);
+            return Err("İçe aktarma sırasında sayaç başlatıldı. Önce sayacı iptal edin.".into());
+        }
         core.commit(backup.data)?;
         drop(core);
         let _ = app.emit("data-changed", ());
@@ -442,7 +481,25 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(debug_assertions)]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        snapshot,
+        command,
+        export_backup,
+        import_backup,
+        request_notification_permission,
+        smoke::smoke_report
+    ]);
+    #[cfg(not(debug_assertions))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        snapshot,
+        command,
+        export_backup,
+        import_backup,
+        request_notification_permission
+    ]);
+    builder
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             show_main(app)
         }))
@@ -465,18 +522,17 @@ pub fn run() {
                 })
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![
-            snapshot,
-            command,
-            export_backup,
-            import_backup,
-            request_notification_permission
-        ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             notifications::request_permission();
             let dir = app.path().app_data_dir()?;
+            #[cfg(debug_assertions)]
+            let dir = if smoke::enabled() {
+                PathBuf::from(std::env::var("ODAK_SMOKE_DIR").unwrap())
+            } else {
+                dir
+            };
             std::fs::create_dir_all(&dir)?;
             let path = dir.join("odak.sqlite3");
             let conn = storage::open(&path).map_err(std::io::Error::other)?;
@@ -528,6 +584,10 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            #[cfg(debug_assertions)]
+            if smoke::enabled() {
+                smoke::start(app.handle().clone());
+            }
             let handle = app.handle().clone();
             thread::spawn(move || loop {
                 if let Err(e) = tick(&handle) {

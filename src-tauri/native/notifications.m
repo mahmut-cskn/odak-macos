@@ -26,6 +26,7 @@ void odak_request_notification_permission(void) {
         UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
         center.delegate = odakDelegate;
         [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge) completionHandler:^(BOOL granted, NSError *error) {
+            (void)granted;
             if (error) NSLog(@"Odak notification authorization: %@", error);
         }];
     }

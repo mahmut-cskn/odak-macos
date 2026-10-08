@@ -398,8 +398,10 @@ mod tests {
     }
     #[test]
     fn limits_are_enforced() {
-        let mut s = Settings::default();
-        s.default_work_min = 91;
+        let mut s = Settings {
+            default_work_min: 91,
+            ..Settings::default()
+        };
         assert!(validate_settings(&s).is_err());
         s.default_work_min = 90;
         s.default_break_min = 30;
