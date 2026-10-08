@@ -1,0 +1,552 @@
+mod model;
+mod notifications;
+mod sound;
+mod storage;
+use chrono::{Local, NaiveDate};
+use model::*;
+use rusqlite::Connection;
+use serde_json::{json, Value};
+use std::{path::PathBuf, sync::Mutex, thread, time::Duration};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Emitter, Manager, State,
+};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+
+struct Core {
+    conn: Connection,
+    data: Data,
+    path: PathBuf,
+    service_error: Option<String>,
+}
+impl Core {
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            data: self.data.clone(),
+            remaining_ms: self
+                .data
+                .timer
+                .remaining_ms(Local::now().timestamp_millis()),
+            database_path: self.path.to_string_lossy().into(),
+            service_error: self.service_error.clone(),
+        }
+    }
+    fn commit(&mut self, next: Data) -> Result<(), String> {
+        storage::save(&mut self.conn, &next)?;
+        self.data = next;
+        Ok(())
+    }
+}
+struct AppState(Mutex<Core>);
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+fn synchronize_services(
+    app: &tauri::AppHandle,
+    old: Option<&Settings>,
+    new: &Settings,
+) -> Result<(), String> {
+    let shortcut: Shortcut = new
+        .quick_add_shortcut
+        .parse()
+        .map_err(|_| "Geçersiz kısayol. Örnek: CmdOrCtrl+Shift+K".to_string())?;
+    if old.is_none_or(|s| s.quick_add_shortcut != new.quick_add_shortcut) {
+        app.global_shortcut()
+            .register(shortcut)
+            .map_err(|e| format!("Kısayol kaydedilemedi: {e}"))?;
+        if let Some(old) = old {
+            let _ = app
+                .global_shortcut()
+                .unregister(old.quick_add_shortcut.as_str());
+        }
+    }
+    let result = if new.launch_at_login {
+        app.autolaunch().enable()
+    } else {
+        app.autolaunch().disable()
+    };
+    result.map_err(|e| format!("Otomatik başlatma ayarlanamadı: {e}"))
+}
+#[tauri::command]
+fn request_notification_permission() {
+    notifications::request_permission();
+}
+#[tauri::command]
+fn snapshot(state: State<AppState>) -> Result<Snapshot, String> {
+    let c = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(c.snapshot())
+}
+#[tauri::command]
+fn command(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    action: String,
+    payload: Value,
+) -> Result<Snapshot, String> {
+    let mut core = state.0.lock().map_err(|e| e.to_string())?;
+    let mut next = core.data.clone();
+    let now = Local::now().timestamp_millis();
+    // Apply any deadline before user actions; cancellation after a finished deadline cannot erase earned work.
+    let finished = finish_due(&mut next, now);
+    match action.as_str() {
+        "save_task" => {
+            let mut task: Task = serde_json::from_value(payload).map_err(|e| e.to_string())?;
+            task.title = task.title.trim().into();
+            validate_task(&task)?;
+            if let Some(existing) = next.tasks.iter_mut().find(|t| t.id == task.id) {
+                *existing = task;
+            } else {
+                next.tasks.push(task);
+            }
+            reminder_horizon(&mut next, Local::now());
+        }
+        "toggle_task" => {
+            let id = payload["id"].as_str().ok_or("Görev bulunamadı.")?;
+            let t = next
+                .tasks
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("Görev bulunamadı.")?;
+            if t.recurrence_rule.is_some() {
+                return Err("Tekrar serisi yerine bir günün görevini tamamlayın.".into());
+            }
+            t.status = if t.status == "completed" {
+                "active"
+            } else {
+                "completed"
+            }
+            .into();
+            t.completed_at = if t.status == "completed" {
+                Some(now)
+            } else {
+                None
+            };
+        }
+        "delete_task" => {
+            let id = payload["id"].as_str().ok_or("Görev bulunamadı.")?;
+            if next.timer.phase != "idle" && next.timer.task_id.as_deref() == Some(id) {
+                return Err("Önce bu görevin sayacını iptal edin.".into());
+            }
+            // Removing a series stops future generation but retains its recorded instances and focus history.
+            next.tasks.retain(|t| t.id != id);
+        }
+        "ensure_day" => {
+            let date = NaiveDate::parse_from_str(
+                payload["date"].as_str().ok_or("Geçersiz tarih.")?,
+                "%Y-%m-%d",
+            )
+            .map_err(|_| "Geçersiz tarih.")?;
+            materialize(&mut next, date);
+        }
+        "start" => {
+            if next.timer.phase != "idle" {
+                return Err("Önce çalışan sayacı durdurun.".into());
+            }
+            let work = payload["workMin"]
+                .as_u64()
+                .ok_or("Çalışma süresi geçersiz.")?;
+            let rest = payload["breakMin"]
+                .as_u64()
+                .ok_or("Mola süresi geçersiz.")?;
+            if !(1..=90).contains(&work) || !(1..=30).contains(&rest) {
+                return Err("Çalışma 1–90, mola 1–30 dakika olmalı.".into());
+            }
+            let task = payload["taskId"].as_str().map(String::from);
+            if let Some(id) = &task {
+                if !next
+                    .tasks
+                    .iter()
+                    .any(|t| &t.id == id && t.status == "active" && t.recurrence_rule.is_none())
+                {
+                    return Err("Aktif görev bulunamadı.".into());
+                }
+            }
+            next.timer.work_min = work as u32;
+            next.timer.break_min = rest as u32;
+            next.timer.begin(task, "work", work as u32, now);
+        }
+        "pause" => next.timer.pause(now)?,
+        "resume" => next.timer.resume(now)?,
+        "cancel" => next.timer.cancel(),
+        "continue_work" => {
+            if !next.timer.break_ready || next.timer.phase != "idle" {
+                return Err("Mola henüz bitmedi.".into());
+            }
+            let task = next.timer.task_id.clone().filter(|id| {
+                next.tasks
+                    .iter()
+                    .any(|t| &t.id == id && t.status == "active")
+            });
+            next.timer.begin(task, "work", next.timer.work_min, now);
+        }
+        "extend_break" => {
+            if !next.timer.break_ready || next.timer.phase != "idle" {
+                return Err("Mola henüz bitmedi.".into());
+            }
+            next.timer
+                .begin(next.timer.task_id.clone(), "break", 5, now);
+        }
+        "settings" => {
+            let settings: Settings = serde_json::from_value(payload).map_err(|e| e.to_string())?;
+            validate_settings(&settings)?;
+            synchronize_services(&app, Some(&next.settings), &settings)?;
+            next.settings = settings;
+            core.service_error = None;
+        }
+        "test_sound" => {
+            if next.settings.sound_enabled && !next.settings.quiet_mode {
+                sound::play(
+                    payload["phase"].as_str().unwrap_or("work"),
+                    next.settings.sound_volume,
+                );
+            }
+        }
+        _ => return Err("Bilinmeyen işlem.".into()),
+    }
+    core.commit(next)?;
+    let snapshot = core.snapshot();
+    drop(core);
+    for phase in finished {
+        notify_finish(&app, &phase);
+    }
+    let _ = app.emit("data-changed", ());
+    Ok(snapshot)
+}
+fn notify_finish(app: &tauri::AppHandle, phase: &str) {
+    let state = app.state::<AppState>();
+    let settings = state.0.lock().unwrap().data.settings.clone();
+    let (title, body) = if phase == "work" {
+        (
+            "Çalışma bitti",
+            "Süren görevine eklendi. Görevin aktif; şimdi mola zamanı.",
+        )
+    } else {
+        (
+            "Mola bitti",
+            "Odak’ı açıp Devam et veya 5 dk daha seçebilirsin.",
+        )
+    };
+    if let Err(e) = notifications::send(title, body, false) {
+        state.0.lock().unwrap().service_error = Some(format!("Bildirim gönderilemedi: {e}"));
+    }
+    if settings.sound_enabled && !settings.quiet_mode {
+        sound::play(phase, settings.sound_volume);
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Backup {
+    format: String,
+    version: u32,
+    exported_at: i64,
+    data: Data,
+}
+fn validate_backup(data: &Data) -> Result<(), String> {
+    validate_settings(&data.settings)?;
+    let mut ids = std::collections::HashSet::new();
+    for task in &data.tasks {
+        validate_task(task)?;
+        if !ids.insert(task.id.clone()) {
+            return Err("Yinelenen görev kimliği.".into());
+        }
+    }
+    let mut sessions = std::collections::HashSet::new();
+    for s in &data.sessions {
+        if !sessions.insert(&s.id)
+            || !["work", "break"].contains(&s.r#type.as_str())
+            || s.planned_min < 1
+            || s.planned_min > 90
+            || !s.actual_min.is_finite()
+            || s.actual_min < 0.0
+            || s.actual_min > s.planned_min as f64
+            || s.ended_at < s.started_at
+        {
+            return Err("Oturum kaydı geçersiz.".into());
+        }
+    }
+    let t = &data.timer;
+    if !["work", "break", "paused", "idle"].contains(&t.phase.as_str())
+        || !(1..=90).contains(&t.work_min)
+        || !(1..=30).contains(&t.break_min)
+        || !(1..=90).contains(&t.planned_min)
+        || t.paused_accumulated_ms < 0
+    {
+        return Err("Sayaç kaydı geçersiz.".into());
+    }
+    if t.phase != "idle" && t.started_at.is_none() {
+        return Err("Sayaç başlangıcı eksik.".into());
+    }
+    if t.phase == "paused"
+        && (t.paused_at.is_none() || !matches!(t.paused_phase.as_deref(), Some("work" | "break")))
+    {
+        return Err("Duraklama kaydı geçersiz.".into());
+    }
+    Ok(())
+}
+#[tauri::command]
+async fn export_backup(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(file) = rfd::FileDialog::new()
+            .set_title("Odak yedeğini kaydet")
+            .set_file_name("odak-yedek.json")
+            .add_filter("JSON", &["json"])
+            .save_file()
+        else {
+            return Ok(None);
+        };
+        let state = app.state::<AppState>();
+        let core = state.0.lock().map_err(|e| e.to_string())?;
+        let backup = Backup {
+            format: "odak-backup".into(),
+            version: 1,
+            exported_at: Local::now().timestamp_millis(),
+            data: core.data.clone(),
+        };
+        std::fs::write(
+            &file,
+            serde_json::to_vec_pretty(&backup).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(Some(file.to_string_lossy().into()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn import_backup(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(file) = rfd::FileDialog::new()
+            .set_title("Odak yedeğini geri yükle")
+            .add_filter("JSON", &["json"])
+            .pick_file()
+        else {
+            return Ok(None);
+        };
+        if std::fs::metadata(&file).map_err(|e| e.to_string())?.len() > 50_000_000 {
+            return Err("Yedek dosyası 50 MB sınırını aşıyor.".into());
+        }
+        let backup: Backup =
+            serde_json::from_slice(&std::fs::read(&file).map_err(|e| e.to_string())?)
+                .map_err(|_| "Yedek dosyası geçersiz.".to_string())?;
+        if backup.format != "odak-backup" || backup.version != 1 {
+            return Err("Desteklenmeyen yedek biçimi.".into());
+        }
+        validate_backup(&backup.data)?;
+        let state = app.state::<AppState>();
+        let mut core = state.0.lock().map_err(|e| e.to_string())?;
+        if core.data.timer.phase != "idle" {
+            return Err("İçe aktarmadan önce sayacı iptal edin.".into());
+        }
+        let recovery = core
+            .path
+            .with_file_name(format!("recovery-{}.json", Local::now().timestamp_millis()));
+        std::fs::write(
+            &recovery,
+            serde_json::to_vec_pretty(&Backup {
+                format: "odak-backup".into(),
+                version: 1,
+                exported_at: Local::now().timestamp_millis(),
+                data: core.data.clone(),
+            })
+            .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        synchronize_services(&app, Some(&core.data.settings), &backup.data.settings)?;
+        core.commit(backup.data)?;
+        drop(core);
+        let _ = app.emit("data-changed", ());
+        Ok(Some(recovery.to_string_lossy().into()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn tick(app: &tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut core = state.0.lock().map_err(|e| e.to_string())?;
+    let now = Local::now();
+    let ms = now.timestamp_millis();
+    let mut next = core.data.clone();
+    let mut changed = reminder_horizon(&mut next, now);
+    let finished = finish_due(&mut next, ms);
+    changed |= !finished.is_empty();
+    let mut reminders = vec![];
+    for task in &next.tasks {
+        if task.status != "active" || task.recurrence_rule.is_some() {
+            continue;
+        }
+        if let Some(start) = task.start_at {
+            let key = format!("{}:{start}:{}", task.id, next.settings.notify_lead_min);
+            if ms >= start - next.settings.notify_lead_min as i64 * 60_000
+                && ms < task.end_at.unwrap_or(start + 60_000)
+                && !next.notified.contains(&key)
+            {
+                let minutes = ((start - ms) as f64 / 60000.0).ceil().max(0.0) as i64;
+                let body = if minutes > 0 {
+                    format!(
+                        "Programın var: \"{}\" {} dakika sonra başlayacak",
+                        task.title, minutes
+                    )
+                } else {
+                    format!("Programın başladı: \"{}\"", task.title)
+                };
+                reminders.push((key, body));
+            }
+        }
+    }
+    let quiet = next.settings.quiet_mode;
+    let remaining = next.timer.remaining_ms(ms);
+    let phase = next.timer.phase.clone();
+    if changed {
+        core.commit(next)?;
+    }
+    drop(core);
+    // Mark only successfully delivered reminders, allowing retries after permission or service errors.
+    for (key, body) in reminders {
+        let result = notifications::send("Odak · Programın var", &body, !quiet);
+        let mut c = state.0.lock().map_err(|e| e.to_string())?;
+        match result {
+            Ok(()) => {
+                let mut d = c.data.clone();
+                d.notified.push(key);
+                c.commit(d)?;
+            }
+            Err(e) => c.service_error = Some(format!("Bildirim gönderilemedi: {e}")),
+        }
+    }
+    if let Some(tray) = app.tray_by_id("odak") {
+        let title = if phase == "idle" {
+            String::new()
+        } else {
+            let seconds = (remaining + 999) / 1000;
+            format!(
+                "{}{:02}:{:02}",
+                if phase == "paused" { "Ⅱ " } else { "" },
+                seconds / 60,
+                seconds % 60
+            )
+        };
+        let _ = tray.set_title(Some(title));
+    }
+    for phase in finished {
+        notify_finish(app, &phase);
+    }
+    if changed {
+        let _ = app.emit("data-changed", ());
+    }
+    let _ = app.emit("timer-tick", json!({"remainingMs":remaining,"phase":phase}));
+    Ok(())
+}
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            show_main(app)
+        }))
+        .plugin(tauri_plugin_notification::init())
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .macos_launcher(MacosLauncher::LaunchAgent)
+                .build(),
+        )
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        if let Some(w) = app.get_webview_window("quick") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                            let _ = app.emit_to("quick", "quick-open", ());
+                        }
+                    }
+                })
+                .build(),
+        )
+        .invoke_handler(tauri::generate_handler![
+            snapshot,
+            command,
+            export_backup,
+            import_backup,
+            request_notification_permission
+        ])
+        .setup(|app| {
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            notifications::request_permission();
+            let dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join("odak.sqlite3");
+            let conn = storage::open(&path).map_err(std::io::Error::other)?;
+            let data = storage::load(&conn).map_err(std::io::Error::other)?;
+            let service_error = synchronize_services(app.handle(), None, &data.settings).err();
+            app.manage(AppState(Mutex::new(Core {
+                conn,
+                data,
+                path,
+                service_error,
+            })));
+            let open = MenuItem::with_id(app, "open", "Odak’ı aç", true, None::<&str>)?;
+            let quick = MenuItem::with_id(app, "quick", "Hızlı görev ekle", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Çık", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open, &quick, &quit])?;
+            TrayIconBuilder::with_id("odak")
+                .icon(tauri::include_image!("icons/tray.png"))
+                .icon_as_template(true)
+                .tooltip("Odak · Odaklan, planla, tamamla")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => show_main(app),
+                    "quick" => {
+                        if let Some(w) = app.get_webview_window("quick") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                            let _ = app.emit_to("quick", "quick-open", ());
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => (),
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            if w.is_visible().unwrap_or(false) {
+                                let _ = w.hide();
+                            } else {
+                                show_main(app);
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
+            let handle = app.handle().clone();
+            thread::spawn(move || loop {
+                if let Err(e) = tick(&handle) {
+                    if let Some(state) = handle.try_state::<AppState>() {
+                        if let Ok(mut c) = state.0.lock() {
+                            c.service_error = Some(e);
+                        }
+                    }
+                }
+                thread::sleep(Duration::from_secs(1));
+            });
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
+        .run(tauri::generate_context!())
+        .expect("Odak başlatılamadı");
+}

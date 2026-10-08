@@ -1,0 +1,12 @@
+# Decisions
+- App name is Odak; bundle identifier is com.mahmutcskn.odak; minimum supported macOS is 11.0.
+- Rust owns the timestamp-based timer, tray, SQLite transactions, native reminders and synthesized audio; React owns presentation, filtering and statistics.
+- SQLite uses rusqlite with bundled SQLite to avoid user dependencies; all writes are transactional.
+- A completed work session starts its configured break automatically; after the break the user explicitly chooses Continue or Five more minutes.
+- Cancel affects only the current phase, writes no session and never modifies task status or previously earned focus time.
+- Missed reminders are delivered at launch while their task has not ended; duplicate notifications are persisted and suppressed.
+- Recurrence instances are generated lazily per viewed day and for the reminder horizon; monthly rules skip months without the chosen day.
+- Notification actions are shown in the application because Tauri desktop notifications do not expose mobile action buttons.
+- JSON import replaces the complete database after validation and automatically writes a recovery backup; import is disabled during an active timer.
+- v1.0.0 includes all requested features that fit safely; v1.1.0 follows with validation and reliability improvements.
+- Native UNUserNotificationCenter adapts macOS permission requests and delivery; the required notification plugin remains initialized because its desktop permission API always reports Granted.
