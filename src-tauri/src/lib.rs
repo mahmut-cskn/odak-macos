@@ -1,3 +1,4 @@
+mod labels;
 mod model;
 mod notifications;
 #[cfg(debug_assertions)]
@@ -22,6 +23,7 @@ struct Core {
     data: Data,
     path: PathBuf,
     service_error: Option<String>,
+    labels: labels::Catalog,
 }
 impl Core {
     fn snapshot(&self) -> Snapshot {
@@ -33,6 +35,7 @@ impl Core {
                 .remaining_ms(Local::now().timestamp_millis()),
             database_path: self.path.to_string_lossy().into(),
             service_error: self.service_error.clone(),
+            labels: self.labels.available(&self.data.tasks),
         }
     }
     fn commit(&mut self, next: Data) -> Result<(), String> {
@@ -79,6 +82,19 @@ fn synchronize_services(
     result.map_err(|e| format!("Otomatik başlatma ayarlanamadı: {e}"))
 }
 #[tauri::command]
+fn drive_backup_status() -> Value {
+    let Some(home) = std::env::var_os("HOME") else {
+        return json!({"configured": false});
+    };
+    let profile = PathBuf::from(home).join("Library/Application Support/Odak Backup");
+    let state: Value = std::fs::read(profile.join("state.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or(Value::Null);
+    json!({"configured": profile.join("config.json").exists(),
+        "lastUploadedAt": state["last_uploaded_at"], "lastFilename": state["last_filename"]})
+}
+#[tauri::command]
 fn request_notification_permission() {
     notifications::request_permission();
 }
@@ -111,6 +127,26 @@ fn execute(
         None
     };
     let mut core = state.0.lock().map_err(|e| e.to_string())?;
+    // Catalog edits only touch labels.json, never task/session/timer rows.
+    if action == "save_label" || action == "delete_label" {
+        let name = payload["name"].as_str().ok_or("Etiket adı gerekli.")?;
+        let path = core.path.with_file_name("labels.json");
+        let mut catalog = labels::Catalog::load(&path)?;
+        if action == "save_label" {
+            catalog.add(
+                name,
+                payload["color"].as_str().ok_or("Etiket rengi gerekli.")?,
+            )?;
+        } else {
+            catalog.remove(name);
+        }
+        catalog.save(&path)?;
+        core.labels = catalog;
+        let snapshot = core.snapshot();
+        drop(core);
+        let _ = app.emit("data-changed", ());
+        return Ok(snapshot);
+    }
     let mut next = core.data.clone();
     let now = Local::now().timestamp_millis();
     // Apply any deadline before user actions; cancellation after a finished deadline cannot erase earned work.
@@ -120,8 +156,22 @@ fn execute(
             let mut task: Task = serde_json::from_value(payload).map_err(|e| e.to_string())?;
             task.title = task.title.trim().into();
             validate_task(&task)?;
+            if core.labels.hidden.contains(&task.label) {
+                let path = core.path.with_file_name("labels.json");
+                let mut catalog = labels::Catalog::load(&path)?;
+                catalog.add(&task.label, &task.color)?;
+                catalog.save(&path)?;
+                core.labels = catalog;
+            }
             upsert_task(&mut next, task, Local::now().date_naive());
             reminder_horizon(&mut next, Local::now());
+        }
+        "rename_task" => {
+            rename_task(
+                &mut next,
+                payload["id"].as_str().ok_or("Görev bulunamadı.")?,
+                payload["title"].as_str().ok_or("Görev başlığı gerekli.")?,
+            )?;
         }
         "toggle_task" => {
             let id = payload["id"].as_str().ok_or("Görev bulunamadı.")?;
@@ -175,16 +225,11 @@ fn execute(
             if !(1..=90).contains(&work) || !(1..=30).contains(&rest) {
                 return Err("Çalışma 1–90, mola 1–30 dakika olmalı.".into());
             }
-            let task = payload["taskId"].as_str().map(String::from);
-            if let Some(id) = &task {
-                if !next
-                    .tasks
-                    .iter()
-                    .any(|t| &t.id == id && t.status == "active" && t.recurrence_rule.is_none())
-                {
-                    return Err("Aktif görev bulunamadı.".into());
-                }
-            }
+            let id = payload["taskId"]
+                .as_str()
+                .ok_or("Önce adı olan bir görev seçin.")?;
+            validate_focus_task(&next, id)?;
+            let task = Some(id.to_string());
             next.timer.work_min = work as u32;
             next.timer.break_min = rest as u32;
             next.timer.begin(task, "work", work as u32, now);
@@ -196,11 +241,13 @@ fn execute(
             if !next.timer.break_ready || next.timer.phase != "idle" {
                 return Err("Mola henüz bitmedi.".into());
             }
-            let task = next.timer.task_id.clone().filter(|id| {
-                next.tasks
-                    .iter()
-                    .any(|t| &t.id == id && t.status == "active")
-            });
+            let id = next
+                .timer
+                .task_id
+                .as_deref()
+                .ok_or("Yeni odak oturumu için bir görev seçin.")?;
+            validate_focus_task(&next, id)?;
+            let task = Some(id.to_string());
             next.timer.begin(task, "work", next.timer.work_min, now);
         }
         "extend_break" => {
@@ -524,6 +571,7 @@ pub fn run() {
         export_backup,
         import_backup,
         request_notification_permission,
+        drive_backup_status,
         smoke::smoke_report
     ]);
     #[cfg(not(debug_assertions))]
@@ -532,7 +580,8 @@ pub fn run() {
         command,
         export_backup,
         import_backup,
-        request_notification_permission
+        request_notification_permission,
+        drive_backup_status
     ]);
     builder
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
@@ -572,12 +621,15 @@ pub fn run() {
             let path = dir.join("odak.sqlite3");
             let conn = storage::open(&path).map_err(std::io::Error::other)?;
             let data = storage::load(&conn).map_err(std::io::Error::other)?;
+            let labels =
+                labels::Catalog::load(&dir.join("labels.json")).map_err(std::io::Error::other)?;
             let service_error = synchronize_services(app.handle(), None, &data.settings).err();
             app.manage(AppState(Mutex::new(Core {
                 conn,
                 data,
                 path,
                 service_error,
+                labels,
             })));
             let open = MenuItem::with_id(app, "open", "Odak’ı aç", true, None::<&str>)?;
             let quick = MenuItem::with_id(app, "quick", "Hızlı görev ekle", true, None::<&str>)?;

@@ -166,6 +166,7 @@ pub struct Snapshot {
     pub remaining_ms: i64,
     pub database_path: String,
     pub service_error: Option<String>,
+    pub labels: Vec<crate::labels::Label>,
 }
 
 pub fn validate_settings(s: &Settings) -> Result<(), String> {
@@ -285,30 +286,13 @@ pub fn prune_future_instances(data: &mut Data, series: &str, today: NaiveDate) -
 }
 pub fn upsert_task(data: &mut Data, task: Task, today: NaiveDate) {
     let previous = data.tasks.iter().find(|t| t.id == task.id);
-    let previous_label = previous.map(|t| t.label.clone());
     let dates = if previous.is_some_and(|t| t.recurrence_rule.is_some()) {
         prune_future_instances(data, &task.id, today)
     } else {
         vec![]
     };
-    // Keep one consistent color per label. Moving to an existing label adopts its color.
-    let mut task = task;
-    if !task.label.is_empty() {
-        if previous_label.as_deref() != Some(&task.label) {
-            if let Some(existing) = data
-                .tasks
-                .iter()
-                .find(|t| t.label == task.label && t.id != task.id)
-            {
-                task.color = existing.color.clone();
-            }
-        }
-        for existing in &mut data.tasks {
-            if existing.label == task.label {
-                existing.color = task.color.clone();
-            }
-        }
-    }
+    // A user edit affects only the selected task; the catalog supplies defaults.
+    // Never recolor historical or unrelated tasks as a side effect.
     if let Some(existing) = data.tasks.iter_mut().find(|t| t.id == task.id) {
         *existing = task;
     } else {
@@ -431,6 +415,32 @@ pub fn reminder_horizon(data: &mut Data, now: DateTime<Local>) -> bool {
     }
     changed
 }
+/// Title-only editing never changes the running timer, placement, label or series.
+pub fn rename_task(data: &mut Data, id: &str, title: &str) -> Result<(), String> {
+    let title = title.trim();
+    if title.is_empty() || title.chars().count() > 250 || title.contains('\0') {
+        return Err("Görev başlığı 1–250 karakter olmalı.".into());
+    }
+    let task = data
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == id)
+        .ok_or("Görev bulunamadı.")?;
+    task.title = title.into();
+    Ok(())
+}
+pub fn validate_focus_task(data: &Data, id: &str) -> Result<(), String> {
+    if !data.tasks.iter().any(|t| {
+        t.id == id
+            && t.status == "active"
+            && t.recurrence_rule.is_none()
+            && !t.title.trim().is_empty()
+    }) {
+        return Err("Adı olan aktif bir görev seçin.".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,17 +577,42 @@ mod tests {
         assert!(d.tasks.iter().any(|t| t.id == "task@2026-10-08"));
     }
     #[test]
-    fn labels_share_colors_without_new_tasks_overwriting_existing_colors() {
+    fn label_color_edit_preserves_unrelated_tasks() {
         let mut d = Data::default();
-        let mut a = task();
-        a.color = "#8e78a5".into();
-        upsert_task(&mut d, a.clone(), Local::now().date_naive());
+        let a = task();
         let mut b = task();
         b.id = "second".into();
-        upsert_task(&mut d, b, Local::now().date_naive());
-        assert_eq!(d.tasks[1].color, "#8e78a5");
-        a.color = "#d28567".into();
-        upsert_task(&mut d, a, Local::now().date_naive());
-        assert!(d.tasks.iter().all(|t| t.color == "#d28567"));
+        d.tasks = vec![a.clone(), b.clone()];
+        let untouched = serde_json::to_value(&b).unwrap();
+        let mut changed = a;
+        changed.color = "#d28567".into();
+        upsert_task(&mut d, changed, Local::now().date_naive());
+        assert_eq!(serde_json::to_value(&d.tasks[1]).unwrap(), untouched);
+    }
+    #[test]
+    fn title_edit_preserves_live_timer_and_all_other_task_fields() {
+        let mut d = Data::default();
+        d.tasks.push(task());
+        d.timer.begin(Some("task".into()), "work", 45, 12345);
+        d.timer.pause(23456).unwrap();
+        let before = serde_json::to_value(&d).unwrap();
+        rename_task(&mut d, "task", "Renamed").unwrap();
+        let mut after = serde_json::to_value(&d).unwrap();
+        after["tasks"][0]["title"] = before["tasks"][0]["title"].clone();
+        assert_eq!(before, after);
+        assert!(rename_task(&mut d, "task", "  ").is_err());
+    }
+    #[test]
+    fn legacy_free_timer_finishes_but_new_focus_requires_named_active_task() {
+        let mut d = Data::default();
+        d.timer.begin(None, "work", 1, 0);
+        assert_eq!(finish_due(&mut d, 60000), vec!["work"]);
+        assert_eq!(d.sessions.len(), 1);
+        assert!(d.sessions[0].task_id.is_none());
+        assert!(validate_focus_task(&d, "").is_err());
+        d.tasks.push(task());
+        assert!(validate_focus_task(&d, "task").is_ok());
+        d.tasks[0].status = "completed".into();
+        assert!(validate_focus_task(&d, "task").is_err());
     }
 }

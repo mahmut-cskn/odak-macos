@@ -25,6 +25,7 @@ jobs:
           workspaces: src-tauri -> target
       - run: npm ci
       - run: npm test
+      - run: python3 -m unittest discover -s tests/backup -v
       - run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
       - uses: tauri-apps/tauri-action@v0
         env:

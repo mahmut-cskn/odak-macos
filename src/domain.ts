@@ -70,6 +70,7 @@ export interface Snapshot {
   remainingMs: number;
   databasePath: string;
   serviceError: string | null;
+  labels?: LabelEntry[];
 }
 export const defaultSettings: Settings = {
   defaultWorkMin: 45,
@@ -233,3 +234,28 @@ export function newId(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 export const cloneTask = (task: Task): Task => JSON.parse(JSON.stringify(task));
+
+export interface LabelEntry {
+  name: string;
+  color: string;
+}
+/** Local calendar days, including zero-focus days, without mutating session history. */
+export function dailyTrend(sessions: Session[], today = dayKey(), count = 14) {
+  const first = shiftDay(today, -count);
+  const totals: Record<string, number> = {};
+  for (const session of sessions) {
+    if (session.type !== "work") continue;
+    const date = dayKey(new Date(session.endedAt));
+    if (date >= first && date <= today)
+      totals[date] = (totals[date] || 0) + session.actualMin;
+  }
+  return Array.from({ length: count }, (_, i) => {
+    const date = shiftDay(today, i - count + 1);
+    const minutes = totals[date] || 0;
+    return {
+      date,
+      minutes,
+      delta: minutes - (totals[shiftDay(date, -1)] || 0),
+    };
+  });
+}

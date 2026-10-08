@@ -12,6 +12,15 @@
 - Native UNUserNotificationCenter adapts macOS permission requests and delivery; the required notification plugin remains initialized because its desktop permission API always reports Granted.
 - Editing or deleting a recurrence series rebuilds/removes only future unstarted active instances; completed and started history is preserved.
 - Calendar month dots preview recurrence rules without creating SQLite records; selecting a day materializes that day lazily.
-- Colors belong to label names; changing a label color updates all tasks sharing that label.
+- v1.2.0 supersedes bulk label recoloring: catalog colors supply defaults for new tasks, and explicit task color edits never rewrite unrelated historical tasks.
 - Calendar history includes tasks on their scheduled day and actual completion day, including undated tasks, without changing their original placement.
 - Task IDs fall back to crypto.getRandomValues and task copying uses plain JSON to support older WKWebView versions on macOS 11.
+- v1.2.0 is prepared and published without quitting, replacing, relaunching or invoking the installed running Odak application.
+- No SQLite schema, task/session/timer/settings payload migration or historical data conversion is introduced; label picker preferences live in a separate labels.json file.
+- The timer card shows the task title as the work label; clicking edits only that title through a dedicated command, preserving timer timestamps and other task fields.
+- New work sessions require a named active task; existing taskless timers still resume/finish normally, and their completed sessions are shown read-only in Completed history.
+- Removing a catalog label only hides it from suggestions; existing tasks, colors, historical sessions and filters retain that label, and explicitly typing it again recreates it.
+- The additional focus line chart covers the last 14 local calendar days, includes zero-focus days and compares each selected day with the previous day without replacing existing charts.
+- Dates remain optional; recurrence fills a required day from the selected calendar day or today, and checklist subtasks inherit their parent day without adding persisted date fields.
+- Optional daily Drive backups run outside the offline app at 23:55 with hourly sleep/offline catch-up, use the existing Obsidian Drive authorization and never overwrite its token.
+- Drive backups use SQLite online backup through a read-only source connection, include SQLite/JSON/catalog, retain prior backups, and never restart or mutate the source app or timer.

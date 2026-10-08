@@ -10,6 +10,7 @@ import {
   Plus,
   Settings as SettingsIcon,
   BarChart3,
+  Pencil,
   Play,
   Pause,
   X,
@@ -32,6 +33,7 @@ import {
 import { action, call, load, subscribe } from "./api";
 import {
   calendarPreview,
+  dailyTrend,
   cloneTask,
   newId,
   clock,
@@ -49,6 +51,8 @@ import {
   type Task,
   type Snapshot,
   type Settings,
+  type LabelEntry,
+  type Session,
 } from "./domain";
 type Tab = "today" | "list" | "calendar" | "completed" | "stats" | "settings";
 const weekdays = ["Paz", "Pzt", "Sal", "Çar", "Per", "Cum", "Cmt"];
@@ -74,6 +78,8 @@ export default function App() {
     [rest, setRest] = useState(15),
     [busy, setBusy] = useState(false),
     [quickTitle, setQuickTitle] = useState("");
+  const [focusTaskId, setFocusTaskId] = useState("");
+  const [startAfterSave, setStartAfterSave] = useState(false);
   const quickRef = useRef<HTMLInputElement>(null);
   const apply = useCallback((s: Snapshot) => {
     setSnapshot(s);
@@ -217,9 +223,24 @@ export default function App() {
   const active = timer.phase !== "idle";
   const activeTask = data.tasks.find((t) => t.id === timer.taskId);
   const summary = stats(data.sessions);
-  const labels = [
+  const catalog = snapshot.labels ?? [
+    ...new Map(
+      data.tasks
+        .filter((t) => t.label)
+        .map((t) => [t.label, { name: t.label, color: t.color }]),
+    ).values(),
+  ];
+  const labels = catalog.map((l) => l.name).sort();
+  const filterLabels = [
     ...new Set(data.tasks.map((t) => t.label).filter(Boolean)),
   ].sort();
+  const focusTasks = data.tasks.filter(
+    (t) => t.status === "active" && !t.recurrenceRule,
+  );
+  const selectedFocusTask = focusTasks.find((t) => t.id === focusTaskId);
+  const timerTask =
+    activeTask ||
+    (!active && !timer.breakReady ? selectedFocusTask : undefined);
   let tasks =
     tab === "today"
       ? tasksForDay(data.tasks, dayKey()).filter((t) => t.status === "active")
@@ -234,10 +255,12 @@ export default function App() {
               .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0))
           : tasksForDay(data.tasks, day);
   if (filter) tasks = tasks.filter((t) => t.label === filter);
-  const add = () =>
+  const add = () => {
+    setStartAfterSave(false);
     setEditor(
       newTask(tab === "calendar" ? day : tab === "today" ? dayKey() : null),
     );
+  };
   const move = (task: Task, date: string | null) =>
     run("save_task", {
       ...task,
@@ -245,7 +268,7 @@ export default function App() {
       startAt: null,
       endAt: null,
     });
-  const start = (taskId: string | null) => {
+  const start = (taskId: string) => {
     if (
       !Number.isInteger(work) ||
       work < 1 ||
@@ -257,18 +280,13 @@ export default function App() {
       setError("Çalışma 1–90, mola 1–30 dakika olmalı.");
       return;
     }
-    run("start", { taskId, workMin: work, breakMin: rest });
+    return run("start", { taskId, workMin: work, breakMin: rest });
   };
   return (
     <div className="app-shell">
       <header className="app-header">
         <div className="brand">
-          <span className="brand-mark">
-            <Leaf size={21} />
-          </span>
-          <span>
-            odak<span className="brand-dot">.</span>
-          </span>
+          <span className="brand-name">Odak</span>
         </div>
         <div className="header-right">
           <span className="local-tag">
@@ -345,7 +363,22 @@ export default function App() {
               className={`timer-card ${timer.phase === "break" || timer.pausedPhase === "break" ? "resting" : ""}`}
             >
               <div className="timer-top">
-                <span className="eyebrow">
+                {timerTask ? (
+                  <TimerTitle
+                    task={timerTask}
+                    busy={busy}
+                    onRename={(title) =>
+                      run("rename_task", { id: timerTask.id, title })
+                    }
+                  />
+                ) : (
+                  <span className="timer-title">
+                    {active || timer.breakReady
+                      ? "Önceki odak oturumu"
+                      : "Bir görev seç"}
+                  </span>
+                )}
+                <span className="eyebrow timer-phase">
                   <span className="pulse-dot" />
                   {timer.phase === "paused"
                     ? "DURAKLATILDI"
@@ -353,10 +386,9 @@ export default function App() {
                       ? "MOLA ZAMANI"
                       : timer.breakReady
                         ? "MOLA BİTTİ"
-                        : "ODAK ZAMANI"}
-                </span>
-                <span className="timer-session">
-                  {activeTask ? activeTask.title : "Serbest odak"}
+                        : active
+                          ? "ÇALIŞIYOR"
+                          : "HAZIR"}
                 </span>
               </div>
               <div className="timer-body">
@@ -368,17 +400,6 @@ export default function App() {
                         ? "00:00"
                         : clock(work * 60000)}
                   </div>
-                  <p>
-                    {active
-                      ? timer.phase === "paused"
-                        ? "Hazır olduğunda kaldığın yerden."
-                        : timer.phase === "break"
-                          ? "Bir nefes al. Bu mola senin."
-                          : "Tek iş, bütün dikkatin."
-                      : timer.breakReady
-                        ? "Bir sonraki adımı sen seç."
-                        : "Küçük bir başlangıç, büyük bir ilerleme."}
-                  </p>
                 </div>
                 <div className="timer-controls">
                   {active ? (
@@ -410,7 +431,14 @@ export default function App() {
                     <>
                       <button
                         className="primary"
-                        onClick={() => run("continue_work")}
+                        onClick={() => {
+                          if (timerTask?.status === "active")
+                            run("continue_work");
+                          else {
+                            setStartAfterSave(true);
+                            setEditor(newTask(dayKey()));
+                          }
+                        }}
                       >
                         <Play size={16} />
                         Devam et
@@ -422,8 +450,10 @@ export default function App() {
                   ) : (
                     <button
                       className="primary"
-                      disabled={busy}
-                      onClick={() => start(null)}
+                      disabled={busy || !selectedFocusTask}
+                      onClick={() =>
+                        selectedFocusTask && start(selectedFocusTask.id)
+                      }
                     >
                       <Play size={16} />
                       Odaklanmaya başla
@@ -431,6 +461,33 @@ export default function App() {
                   )}
                 </div>
               </div>
+              {!active && !timer.breakReady && (
+                <div className="focus-picker">
+                  <select
+                    aria-label="Odaklanılacak görev"
+                    value={selectedFocusTask?.id || ""}
+                    onChange={(e) => setFocusTaskId(e.target.value)}
+                  >
+                    <option value="">Hangi işe odaklanacaksın?</option>
+                    {focusTasks.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.title}
+                        {t.label ? ` · ${t.label}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="text-button"
+                    onClick={() => {
+                      setStartAfterSave(true);
+                      setEditor(newTask(dayKey()));
+                    }}
+                  >
+                    <Plus size={14} />
+                    Yeni görevle başla
+                  </button>
+                </div>
+              )}
               <div className="timer-footer">
                 <div className="duration-fields">
                   <label>
@@ -618,7 +675,7 @@ export default function App() {
                   onChange={(e) => setFilter(e.target.value)}
                 >
                   <option value="">Tüm etiketler</option>
-                  {labels.map((l) => (
+                  {filterLabels.map((l) => (
                     <option key={l}>{l}</option>
                   ))}
                 </select>
@@ -671,6 +728,13 @@ export default function App() {
                   </div>
                 )}
               </div>
+              {tab === "completed" && (
+                <SessionHistory
+                  sessions={data.sessions}
+                  tasks={data.tasks}
+                  filter={filter}
+                />
+              )}
               {tab === "list" && data.tasks.some((t) => t.recurrenceRule) && (
                 <div className="series-list">
                   <h3>
@@ -743,6 +807,7 @@ export default function App() {
                 );
               })}
             </div>
+            <FocusTrend sessions={data.sessions} />
             <h3>Etikete göre · bu hafta</h3>
             {Object.entries(summary.labels)
               .sort((a, b) => b[1] - a[1])
@@ -774,6 +839,9 @@ export default function App() {
             settings={data.settings}
             databasePath={snapshot.databasePath}
             active={active}
+            labels={catalog}
+            onLabelSave={(name, color) => run("save_label", { name, color })}
+            onLabelDelete={(name) => run("delete_label", { name })}
             onSave={(s) => run("settings", s)}
             onSound={(phase) => run("test_sound", { phase })}
             onBackup={async (kind) => {
@@ -816,9 +884,20 @@ export default function App() {
         <TaskEditor
           initial={editor}
           labels={labels}
-          onClose={() => setEditor(null)}
+          catalog={catalog}
+          defaultDay={tab === "calendar" ? day : dayKey()}
+          startAfterSave={startAfterSave}
+          onClose={() => {
+            setEditor(null);
+            setStartAfterSave(false);
+          }}
           onSave={async (t) => {
-            if (await run("save_task", t)) setEditor(null);
+            if (await run("save_task", t)) {
+              setEditor(null);
+              setFocusTaskId(t.id);
+              if (startAfterSave) await start(t.id);
+              setStartAfterSave(false);
+            }
           }}
           onDelete={
             data.tasks.some((t) => t.id === editor.id)
@@ -1018,6 +1097,9 @@ function TaskRow({
 function TaskEditor({
   initial,
   labels,
+  catalog,
+  defaultDay,
+  startAfterSave,
   onClose,
   onSave,
   onDelete,
@@ -1026,6 +1108,9 @@ function TaskEditor({
 }: {
   initial: Task;
   labels: string[];
+  catalog: LabelEntry[];
+  defaultDay: string;
+  startAfterSave: boolean;
   onClose: () => void;
   onSave: (task: Task) => Promise<void>;
   onDelete?: () => Promise<void>;
@@ -1088,11 +1173,12 @@ function TaskEditor({
           }}
         >
           <label className="field">
-            Başlık
+            Başlık <span>Zorunlu</span>
             <input
               autoFocus
               required
               maxLength={250}
+              className="required-field"
               aria-label="Başlık"
               placeholder="Ne yapmak istiyorsun?"
               value={task.title}
@@ -1107,7 +1193,13 @@ function TaskEditor({
                 aria-label="Etiket"
                 placeholder="İş, okul, kişisel…"
                 value={task.label}
-                onChange={(e) => patch({ label: e.target.value })}
+                onChange={(e) => {
+                  const label = catalog.find((l) => l.name === e.target.value);
+                  patch({
+                    label: e.target.value,
+                    ...(label ? { color: label.color } : {}),
+                  });
+                }}
               />
               <datalist id="labels">
                 {labels.map((l) => (
@@ -1130,6 +1222,8 @@ function TaskEditor({
               Gün <span>İsteğe bağlı</span>
               <input
                 aria-label="Gün"
+                required={!!task.recurrenceRule}
+                className={task.recurrenceRule ? "required-field" : ""}
                 type="date"
                 value={task.scheduledDate || ""}
                 onChange={(e) => changeDate(e.target.value)}
@@ -1157,6 +1251,8 @@ function TaskEditor({
               Başlangıç saati
               <input
                 aria-label="Başlangıç saati"
+                required={task.endAt !== null}
+                className={task.endAt !== null ? "required-field" : ""}
                 type="time"
                 disabled={!task.scheduledDate}
                 value={timeString(task.startAt)}
@@ -1176,6 +1272,8 @@ function TaskEditor({
               Bitiş saati
               <input
                 aria-label="Bitiş saati"
+                required={task.startAt !== null}
+                className={task.startAt !== null ? "required-field" : ""}
                 type="time"
                 disabled={!task.scheduledDate}
                 value={timeString(task.endAt)}
@@ -1216,15 +1314,20 @@ function TaskEditor({
                   value={task.recurrenceRule?.frequency || ""}
                   onChange={(e) =>
                     patch({
+                      scheduledDate: e.target.value
+                        ? task.scheduledDate || defaultDay
+                        : task.scheduledDate,
                       recurrenceRule: e.target.value
                         ? {
                             frequency: e.target.value as
                               "daily" | "weekly" | "monthly",
                             weekdays: [
-                              parseDay(task.scheduledDate || dayKey()).getDay(),
+                              parseDay(
+                                task.scheduledDate || defaultDay,
+                              ).getDay(),
                             ],
                             monthDay: parseDay(
-                              task.scheduledDate || dayKey(),
+                              task.scheduledDate || defaultDay,
                             ).getDate(),
                           }
                         : null,
@@ -1295,7 +1398,14 @@ function TaskEditor({
             />
           </label>
           <div className="field">
-            <span>Alt görevler</span>
+            <span>
+              Alt görevler <small>İsteğe bağlı</small>
+            </span>
+            <small className="muted">
+              {task.scheduledDate
+                ? `Ana görevle aynı gün: ${fullDate(task.scheduledDate)}`
+                : "Ana görev gibi tarihsizdir; gün seçmek zorunlu değil."}
+            </small>
             {task.subtasks.map((s) => (
               <div className="subtask-edit" key={s.id}>
                 <input
@@ -1399,7 +1509,7 @@ function TaskEditor({
             </button>
             <button className="primary" disabled={busy}>
               <Check size={15} />
-              Kaydet
+              {startAfterSave ? "Kaydet ve başlat" : "Kaydet"}
             </button>
           </div>
         </form>
@@ -1409,6 +1519,9 @@ function TaskEditor({
 }
 
 function SettingsPanel({
+  labels,
+  onLabelSave,
+  onLabelDelete,
   settings,
   databasePath,
   active,
@@ -1416,6 +1529,9 @@ function SettingsPanel({
   onSound,
   onBackup,
 }: {
+  labels: LabelEntry[];
+  onLabelSave: (name: string, color: string) => Promise<boolean>;
+  onLabelDelete: (name: string) => Promise<boolean>;
   settings: Settings;
   databasePath: string;
   active: boolean;
@@ -1426,6 +1542,20 @@ function SettingsPanel({
   const [draft, setDraft] = useState(settings),
     [saved, setSaved] = useState(false),
     [confirmImport, setConfirmImport] = useState(false);
+  const [driveBackup, setDriveBackup] = useState<{
+    configured: boolean;
+    lastUploadedAt?: string;
+    lastFilename?: string;
+  } | null>(null);
+  useEffect(() => {
+    call<{
+      configured: boolean;
+      lastUploadedAt?: string;
+      lastFilename?: string;
+    }>("drive_backup_status")
+      .then(setDriveBackup)
+      .catch(() => {});
+  }, []);
   const patch = (p: Partial<Settings>) => {
     setDraft((s) => ({ ...s, ...p }));
     setSaved(false);
@@ -1577,6 +1707,11 @@ function SettingsPanel({
           {saved ? "Ayarlar kaydedildi" : "Ayarları kaydet"}
         </button>
       </form>
+      <LabelManager
+        labels={labels}
+        onSave={onLabelSave}
+        onDelete={onLabelDelete}
+      />
       <div className="settings-group backup-group">
         <h3>
           <Download size={17} />
@@ -1606,6 +1741,26 @@ function SettingsPanel({
             dosyasına kaydedilir.
           </p>
         )}
+        {driveBackup?.configured && (
+          <div className="drive-backup-info">
+            <strong>Günlük Google Drive yedeği · bu Mac</strong>
+            <p>
+              23:55’te Drive’daki Odak klasörüne ayrı bir yedek alınır. Uyku
+              veya bağlantı kesintisinden sonra yeniden denenir. Çalışan sayaç
+              durdurulmaz.
+            </p>
+            {driveBackup.lastUploadedAt && (
+              <small>
+                Son başarılı yedek:{" "}
+                {new Date(driveBackup.lastUploadedAt).toLocaleString("tr-TR")}
+              </small>
+            )}
+            <small>
+              Yedekleme bu Mac’e ayrıca kurulmuştur; Odak uygulaması ağ isteği
+              yapmaz.
+            </small>
+          </div>
+        )}
         <small className="database-path">Yerel SQLite: {databasePath}</small>
       </div>
       <p className="privacy-note">
@@ -1613,6 +1768,323 @@ function SettingsPanel({
         Hesap yok. Bulut yok. Verilerin bu Mac’te.
         <span>Odak v{__APP_VERSION__}</span>
       </p>
+    </section>
+  );
+}
+
+function TimerTitle({
+  task,
+  busy,
+  onRename,
+}: {
+  task: Task;
+  busy: boolean;
+  onRename: (title: string) => Promise<boolean>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(task.title);
+  useEffect(() => {
+    if (!editing) setTitle(task.title);
+  }, [task.title, editing]);
+  useEffect(() => {
+    setEditing(false);
+    setTitle(task.title);
+  }, [task.id]);
+  if (!editing)
+    return (
+      <button
+        className="timer-title"
+        aria-label="Odak görev adını düzenle"
+        title="Yalnızca görev adını düzenle"
+        onClick={() => {
+          setTitle(task.title);
+          setEditing(true);
+        }}
+      >
+        {task.title}
+        <Pencil size={12} />
+      </button>
+    );
+  return (
+    <form
+      className="timer-title-edit"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (title.trim() && (await onRename(title))) setEditing(false);
+      }}
+    >
+      <input
+        autoFocus
+        aria-label="Odak görev adı"
+        className="required-field"
+        required
+        maxLength={250}
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setEditing(false);
+        }}
+      />
+      <button aria-label="Görev adını kaydet" disabled={busy || !title.trim()}>
+        <Check size={15} />
+      </button>
+      <button
+        type="button"
+        aria-label="Ad düzenlemeyi iptal et"
+        onClick={() => setEditing(false)}
+      >
+        <X size={15} />
+      </button>
+    </form>
+  );
+}
+
+function SessionHistory({
+  sessions,
+  tasks,
+  filter,
+}: {
+  sessions: Session[];
+  tasks: Task[];
+  filter: string;
+}) {
+  const [limit, setLimit] = useState(20);
+  const history = sessions
+    .filter((s) => s.type === "work" && (!filter || s.label === filter))
+    .sort((a, b) => b.endedAt - a.endedAt);
+  if (!history.length) return null;
+  return (
+    <section className="session-history" aria-label="Biten odak oturumları">
+      <h3>
+        Biten odak oturumları <span>{history.length}</span>
+      </h3>
+      <p className="muted">
+        Oturum bitince süre kaydedilir. Görevi tamamlamak için yuvarlağa
+        basmalısın.
+      </p>
+      {history.slice(0, limit).map((s) => (
+        <div className="session-history-row" key={s.id}>
+          <span>
+            <strong>
+              {tasks.find((t) => t.id === s.taskId)?.title ||
+                (s.taskId
+                  ? "Görevi kaldırılmış oturum"
+                  : "Önceki görevsiz odak")}
+            </strong>
+            <small>
+              {new Date(s.endedAt).toLocaleString("tr-TR", {
+                day: "numeric",
+                month: "short",
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+              {s.label ? ` · ${s.label}` : ""}
+            </small>
+          </span>
+          <span>
+            <Clock size={13} />
+            {formatMinutes(s.actualMin)}
+          </span>
+        </div>
+      ))}
+      {history.length > limit && (
+        <button className="text-button" onClick={() => setLimit(limit + 20)}>
+          Daha fazla göster
+        </button>
+      )}
+    </section>
+  );
+}
+
+function FocusTrend({ sessions }: { sessions: Session[] }) {
+  const days = dailyTrend(sessions);
+  const [selectedDate, setSelectedDate] = useState(dayKey());
+  const selected =
+    days.find((d) => d.date === selectedDate) || days[days.length - 1];
+  const maximum = Math.max(60, ...days.map((d) => d.minutes));
+  const x = (i: number) => 45 + (i * 640) / (days.length - 1);
+  const y = (minutes: number) => 174 - (minutes / maximum) * 140;
+  const points = days.map((d, i) => `${x(i)},${y(d.minutes)}`).join(" ");
+  return (
+    <section className="trend-chart" aria-label="Günlük odak çizgi grafiği">
+      <div className="trend-heading">
+        <h3>Günden güne odak</h3>
+        <span>Son 14 gün</span>
+      </div>
+      <svg
+        viewBox="0 0 730 210"
+        role="img"
+        aria-label="Son 14 günün toplam odak süreleri; noktaya tıklayıp günlük değişimi görebilirsin."
+      >
+        {[0, 0.5, 1].map((ratio) => (
+          <g key={ratio}>
+            <line
+              x1="45"
+              x2="685"
+              y1={y(maximum * ratio)}
+              y2={y(maximum * ratio)}
+              className="trend-grid"
+            />
+            <text x="35" y={y(maximum * ratio) + 4} textAnchor="end">
+              {Math.round(maximum * ratio)}
+            </text>
+          </g>
+        ))}
+        <text x="15" y="15">
+          dk
+        </text>
+        <polygon points={`45,174 ${points} 685,174`} className="trend-area" />
+        <polyline points={points} className="trend-line" />
+        {days.map((d, i) => (
+          <g key={d.date}>
+            <circle
+              cx={x(i)}
+              cy={y(d.minutes)}
+              r={d.date === selected.date ? 5 : 3.5}
+              className="trend-point"
+            />
+            <circle
+              cx={x(i)}
+              cy={y(d.minutes)}
+              r="14"
+              className="trend-hit"
+              role="button"
+              tabIndex={0}
+              aria-label={`${fullDate(d.date)}: ${formatMinutes(d.minutes)}`}
+              aria-pressed={d.date === selected.date}
+              onClick={() => setSelectedDate(d.date)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setSelectedDate(d.date);
+                }
+              }}
+            >
+              <title>
+                {fullDate(d.date)} · {formatMinutes(d.minutes)}
+              </title>
+            </circle>
+            {(i % 3 === 0 || i === days.length - 1) && (
+              <text x={x(i)} y="201" textAnchor="middle">
+                {parseDay(d.date).toLocaleDateString("tr-TR", {
+                  day: "numeric",
+                  month: "short",
+                })}
+              </text>
+            )}
+          </g>
+        ))}
+      </svg>
+      <div className="trend-detail" aria-live="polite">
+        <span>
+          {fullDate(selected.date)} ·{" "}
+          <strong>{formatMinutes(selected.minutes)}</strong>
+        </span>
+        <span
+          className={
+            selected.delta > 0
+              ? "increase"
+              : selected.delta < 0
+                ? "decrease"
+                : "muted"
+          }
+        >
+          {selected.delta > 0
+            ? `↑ Önceki güne göre ${formatMinutes(selected.delta)} daha fazla`
+            : selected.delta < 0
+              ? `↓ Önceki güne göre ${formatMinutes(-selected.delta)} daha az`
+              : "Önceki günle aynı"}
+        </span>
+      </div>
+      <small className="muted">
+        Bugünün değeri, biten odak oturumlarıyla gün boyunca artar.
+      </small>
+    </section>
+  );
+}
+
+function LabelManager({
+  labels,
+  onSave,
+  onDelete,
+}: {
+  labels: LabelEntry[];
+  onSave: (name: string, color: string) => Promise<boolean>;
+  onDelete: (name: string) => Promise<boolean>;
+}) {
+  const [name, setName] = useState("");
+  const [color, setColor] = useState("#438470");
+  const [pending, setPending] = useState(false);
+  return (
+    <section
+      className="settings-group label-manager"
+      aria-label="Etiket yönetimi"
+    >
+      <h3>Etiketler</h3>
+      <p>
+        Etiketleri buradan oluşturabilir veya seçim listesinden kaldırabilirsin.
+        Mevcut görevlerin etiketleri ve renkleri korunur.
+      </p>
+      <form
+        className="label-create"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setPending(true);
+          try {
+            if (await onSave(name.trim(), color)) setName("");
+          } finally {
+            setPending(false);
+          }
+        }}
+      >
+        <input
+          aria-label="Yeni etiket adı"
+          className="required-field"
+          required
+          maxLength={250}
+          placeholder="Etiket adı"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <input
+          type="color"
+          aria-label="Yeni etiket rengi"
+          value={color}
+          onChange={(e) => setColor(e.target.value)}
+        />
+        <button className="primary" disabled={pending || !name.trim()}>
+          <Plus size={15} />
+          Etiket oluştur
+        </button>
+      </form>
+      <div className="managed-labels">
+        {labels.map((l) => (
+          <div key={l.name}>
+            <span className="label-tag" style={{ color: l.color }}>
+              <i style={{ background: l.color }} />
+              {l.name}
+            </span>
+            <button
+              aria-label={`${l.name}: etiketi sil`}
+              title="Seçim listesinden kaldır; görevler korunur"
+              disabled={pending}
+              onClick={async () => {
+                setPending(true);
+                try {
+                  await onDelete(l.name);
+                } finally {
+                  setPending(false);
+                }
+              }}
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <small className="muted">
+        Yeni görevde farklı bir etiket yazmak da etiketi otomatik oluşturur.
+      </small>
     </section>
   );
 }

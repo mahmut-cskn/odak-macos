@@ -8,3 +8,6 @@ playwright-report/
 .tools/
 
 *.tsbuildinfo
+__pycache__/
+*.pyc
+backup-profile/

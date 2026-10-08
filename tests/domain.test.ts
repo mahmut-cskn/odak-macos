@@ -152,3 +152,57 @@ describe("older WebView compatibility", () => {
     expect(a.subtasks[0].done).toBe(false);
   });
 });
+
+describe("daily focus trend", () => {
+  it("includes zero days, compares previous day and counts local completion dates", async () => {
+    const { dailyTrend } = await import("../src/domain");
+    const sessions: Session[] = [
+      {
+        id: "a",
+        taskId: null,
+        type: "work",
+        startedAt: 0,
+        endedAt: new Date("2026-10-06T23:59:00").getTime(),
+        plannedMin: 45,
+        actualMin: 45,
+        label: "",
+      },
+      {
+        id: "b",
+        taskId: "task",
+        type: "work",
+        startedAt: 0,
+        endedAt: new Date("2026-10-07T01:00:00").getTime(),
+        plannedMin: 90,
+        actualMin: 90,
+        label: "İş",
+      },
+      {
+        id: "c",
+        taskId: "task",
+        type: "break",
+        startedAt: 0,
+        endedAt: new Date("2026-10-08T10:00:00").getTime(),
+        plannedMin: 15,
+        actualMin: 15,
+        label: "İş",
+      },
+      {
+        id: "d",
+        taskId: "task",
+        type: "work",
+        startedAt: 0,
+        endedAt: new Date("2026-10-09T10:00:00").getTime(),
+        plannedMin: 45,
+        actualMin: 45,
+        label: "İş",
+      },
+    ];
+    const before = JSON.stringify(sessions);
+    expect(dailyTrend(sessions, "2026-10-08", 2)).toEqual([
+      { date: "2026-10-07", minutes: 90, delta: 45 },
+      { date: "2026-10-08", minutes: 0, delta: -90 },
+    ]);
+    expect(JSON.stringify(sessions)).toBe(before);
+  });
+});

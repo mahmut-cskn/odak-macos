@@ -57,3 +57,18 @@ Yerel entegrasyon: başka Odak süreci kapalıyken `npm run tauri build -- --deb
 
 - Eski WKWebView sürümleri için güvenli UUID geri dönüşü ve görev kopyalama testleri geçti. Yerel WebView’da Yeni görev diyaloğu gerçekten açıldı: [UI sonucu](native-ui-v1.1.0.json).
 - v1.1.0’ın son `0d83ea7` kaynak etiketi için [GitHub Actions universal yayın işi](https://github.com/mahmut-cskn/odak-macos/actions/runs/37772023472) başarılı tamamlandı; universal DMG ve eşleşen SHA-256 otomatik yayımlandı.
+
+## v1.2.0 — çalışan kullanıcı sayacını koruyarak geliştirme
+
+- 13 TypeScript domain testi, 18 Rust testi, 11 izole Chromium UI testi ve 4 Python yedekleme testi geçti.
+- Görev adı düzenlemesinin bütün sayaç alanlarını ve görevin diğer alanlarını birebir koruduğu Rust ve UI testlerinde doğrulandı.
+- Etiket oluşturma/silme yalnızca ayrı seçim listesine yazıyor; görev/oturum/sayaç verileri değişmiyor. Başka bir görevin renk düzenlemesi eski görevleri topluca yeniden renklendirmiyor.
+- Yeni görev şartı, mevcut görevsiz sayacın normal bitişi ve eski görevsiz oturumların Tamamlanan bölümünde dönüşüm yapılmadan görünmesi test edildi.
+- Yeni çizgi grafik sıfır günleri, yerel bitiş tarihlerini ve günlük artış/azalışı hesaplıyor; mola ve gelecek kayıtlarını saymıyor. Önceki grafikler korunuyor.
+- SQLite Online Backup testi, açık WAL yazıcısı varken son kayıtları, bilinmeyen ek görev alanlarını ve çalışan sayaç zaman damgalarını aynen koruyan ZIP/JSON/SQLite kopyalarını doğruluyor; yazıcı sonrasında da çalışıyor.
+- Bu Mac’e ayrı günlük Drive LaunchAgent’ı kuruldu. İlk gerçek ZIP Google Drive’a gönderildi; uzak dosya boyutu doğrulandı. Yedekten hemen önce/sonra 38 mevcut görev kaydı ve çalışan `work` sayaç kaydı birebir aynı kaldı. Kullanıcı notları ve token’lar test raporlarına veya GitHub’a yazılmadı.
+- Çalışan `/Applications/Odak.app` kapatılmadı, değiştirilmedi veya yeniden başlatılmadı. Kullanıcının gerçek SQLite’ında şema/görev/oturum/sayaç değişikliği yapılmadı. Arayüz testleri mock verileri, Rust testleri bellek SQLite’ını ve Python testleri geçici dizinleri kullanır.
+- Yeni DMG yalnızca derlenip doğrulanır ve indirmeye sunulur; çalışan uygulamanın üzerine otomatik kurulmaz.
+- Son v1.2.0 universal DMG `hdiutil verify` kontrolünü geçti; `lipo` arm64 + x86_64 gösterdi ve ad-hoc imza `codesign --verify --deep --strict` ile doğrulandı. SHA-256 dosyası pakete eşlik ediyor.
+- Drive’daki gerçek ZIP’in MD5 sağlama toplamı yerel kopyayla birebir eşleşti; günlük LaunchAgent ilk çalışmadan `exit code=0` ile çıktı ve 23:55 + 3600 saniyelik tetikleri doğrulandı.
+- `cargo clippy --all-targets --locked -- -D warnings` temiz. Toplam 46 otomatik test geçti.
