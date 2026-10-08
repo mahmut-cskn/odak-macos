@@ -189,6 +189,40 @@ pub fn validate_task(t: &Task) -> Result<(), String> {
     {
         return Err("Görev başlığı veya durumu geçersiz.".into());
     }
+    if t.color.len() != 7
+        || !t.color.starts_with('#')
+        || !t.color.bytes().skip(1).all(|c| c.is_ascii_hexdigit())
+        || t.title.contains('\0')
+        || t.label.len() > 250
+        || t.notes.len() > 100_000
+        || t.estimate_min.is_some_and(|v| v == 0 || v > 100_000)
+    {
+        return Err("Görev rengi, metni veya tahmini süresi geçersiz.".into());
+    }
+    for timestamp in [
+        Some(t.created_at),
+        t.completed_at,
+        t.start_at,
+        t.end_at,
+        t.due_at,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !(0..=253_402_214_400_000).contains(&timestamp) {
+            return Err("Görev zamanı geçersiz.".into());
+        }
+    }
+    let mut subtasks = std::collections::HashSet::new();
+    for subtask in &t.subtasks {
+        if subtask.id.is_empty()
+            || !subtasks.insert(&subtask.id)
+            || subtask.title.trim().is_empty()
+            || subtask.title.len() > 1000
+        {
+            return Err("Alt görev kaydı geçersiz.".into());
+        }
+    }
     if (t.status == "completed") != t.completed_at.is_some() {
         return Err("Tamamlama durumu geçersiz.".into());
     }
@@ -199,6 +233,17 @@ pub fn validate_task(t: &Task) -> Result<(), String> {
         || t.start_at.zip(t.end_at).is_some_and(|(a, b)| b <= a)
     {
         return Err("Bitiş saati başlangıçtan sonra olmalı.".into());
+    }
+    if let Some(start) = t.start_at {
+        if t.scheduled_date.as_deref()
+            != Local
+                .timestamp_millis_opt(start)
+                .single()
+                .map(|d| d.date_naive().to_string())
+                .as_deref()
+        {
+            return Err("Saat aralığı seçili günle eşleşmiyor.".into());
+        }
     }
     if let Some(r) = &t.recurrence_rule {
         if !["daily", "weekly", "monthly"].contains(&r.frequency.as_str())
@@ -212,6 +257,66 @@ pub fn validate_task(t: &Task) -> Result<(), String> {
         }
     }
     Ok(())
+}
+// Rebuild only unstarted future instances when a series changes.
+pub fn prune_future_instances(data: &mut Data, series: &str, today: NaiveDate) -> Vec<NaiveDate> {
+    let mut removed = vec![];
+    let started: std::collections::HashSet<String> = data
+        .sessions
+        .iter()
+        .filter_map(|s| s.task_id.clone())
+        .collect();
+    data.tasks.retain(|task| {
+        let date = task
+            .scheduled_date
+            .as_ref()
+            .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+        let remove = task.series_id.as_deref() == Some(series)
+            && task.status == "active"
+            && date.is_some_and(|d| d >= today)
+            && !started.contains(&task.id)
+            && data.timer.task_id.as_deref() != Some(task.id.as_str());
+        if remove {
+            removed.push(date.unwrap());
+        }
+        !remove
+    });
+    removed
+}
+pub fn upsert_task(data: &mut Data, task: Task, today: NaiveDate) {
+    let previous = data.tasks.iter().find(|t| t.id == task.id);
+    let previous_label = previous.map(|t| t.label.clone());
+    let dates = if previous.is_some_and(|t| t.recurrence_rule.is_some()) {
+        prune_future_instances(data, &task.id, today)
+    } else {
+        vec![]
+    };
+    // Keep one consistent color per label. Moving to an existing label adopts its color.
+    let mut task = task;
+    if !task.label.is_empty() {
+        if previous_label.as_deref() != Some(&task.label) {
+            if let Some(existing) = data
+                .tasks
+                .iter()
+                .find(|t| t.label == task.label && t.id != task.id)
+            {
+                task.color = existing.color.clone();
+            }
+        }
+        for existing in &mut data.tasks {
+            if existing.label == task.label {
+                existing.color = task.color.clone();
+            }
+        }
+    }
+    if let Some(existing) = data.tasks.iter_mut().find(|t| t.id == task.id) {
+        *existing = task;
+    } else {
+        data.tasks.push(task);
+    }
+    for date in dates {
+        materialize(data, date);
+    }
 }
 pub fn occurs(t: &Task, date: NaiveDate) -> bool {
     let Some(r) = &t.recurrence_rule else {
@@ -406,5 +511,73 @@ mod tests {
         s.default_work_min = 90;
         s.default_break_min = 30;
         assert!(validate_settings(&s).is_ok());
+    }
+    #[test]
+    fn series_edit_rebuilds_future_but_keeps_completed_history() {
+        let mut d = Data::default();
+        let mut t = task();
+        t.recurrence_rule = Some(Recurrence {
+            frequency: "daily".into(),
+            weekdays: vec![],
+            month_day: 1,
+        });
+        d.tasks.push(t.clone());
+        let today = NaiveDate::from_ymd_opt(2026, 10, 8).unwrap();
+        materialize(&mut d, today);
+        materialize(&mut d, today + Duration::days(1));
+        d.tasks[1].status = "completed".into();
+        d.tasks[1].completed_at = Some(1);
+        t.title = "Updated series".into();
+        upsert_task(&mut d, t, today);
+        assert_eq!(
+            d.tasks
+                .iter()
+                .find(|t| t.scheduled_date.as_deref() == Some("2026-10-08"))
+                .unwrap()
+                .title,
+            "Task"
+        );
+        assert_eq!(
+            d.tasks
+                .iter()
+                .find(|t| t.scheduled_date.as_deref() == Some("2026-10-09"))
+                .unwrap()
+                .title,
+            "Updated series"
+        );
+    }
+    #[test]
+    fn deleting_series_prunes_only_unstarted_future_instances() {
+        let mut d = Data::default();
+        let mut t = task();
+        t.recurrence_rule = Some(Recurrence {
+            frequency: "daily".into(),
+            weekdays: vec![],
+            month_day: 1,
+        });
+        d.tasks.push(t);
+        let today = NaiveDate::from_ymd_opt(2026, 10, 8).unwrap();
+        materialize(&mut d, today - Duration::days(1));
+        materialize(&mut d, today);
+        materialize(&mut d, today + Duration::days(1));
+        d.timer.task_id = Some("task@2026-10-08".into());
+        let removed = prune_future_instances(&mut d, "task", today);
+        assert_eq!(removed, vec![today + Duration::days(1)]);
+        assert!(d.tasks.iter().any(|t| t.id == "task@2026-10-07"));
+        assert!(d.tasks.iter().any(|t| t.id == "task@2026-10-08"));
+    }
+    #[test]
+    fn labels_share_colors_without_new_tasks_overwriting_existing_colors() {
+        let mut d = Data::default();
+        let mut a = task();
+        a.color = "#8e78a5".into();
+        upsert_task(&mut d, a.clone(), Local::now().date_naive());
+        let mut b = task();
+        b.id = "second".into();
+        upsert_task(&mut d, b, Local::now().date_naive());
+        assert_eq!(d.tasks[1].color, "#8e78a5");
+        a.color = "#d28567".into();
+        upsert_task(&mut d, a, Local::now().date_naive());
+        assert!(d.tasks.iter().all(|t| t.color == "#d28567"));
     }
 }

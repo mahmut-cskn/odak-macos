@@ -1,7 +1,7 @@
 name: macOS universal release
 on:
   push:
-    tags: ['v*']
+    tags: ["v*"]
   workflow_dispatch:
 permissions:
   contents: write
@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -35,3 +35,12 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: --target universal-apple-darwin
+      - name: Publish SHA-256 checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for odak_dmg in src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg; do
+            odak_checksum="${odak_dmg%.dmg}_SHA256.txt"
+            (cd "$(dirname "$odak_dmg")" && shasum -a 256 "$(basename "$odak_dmg")") > "$odak_checksum"
+            gh release upload "$GITHUB_REF_NAME" "$odak_checksum" --clobber
+          done

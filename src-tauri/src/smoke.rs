@@ -183,6 +183,15 @@ fn checks(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
     planned.title = "Planlı görev hatırlatması".into();
     planned.start_at = Some(Local::now().timestamp_millis() + 14 * 60000);
     planned.end_at = Some(Local::now().timestamp_millis() + 15 * 60000);
+    use chrono::TimeZone;
+    planned.scheduled_date = Some(
+        Local
+            .timestamp_millis_opt(planned.start_at.unwrap())
+            .single()
+            .unwrap()
+            .date_naive()
+            .to_string(),
+    );
     invoke("save_task", serde_json::to_value(planned).unwrap())?;
     tick(app)?;
     if !snapshot(app.state::<AppState>())?
@@ -200,8 +209,8 @@ fn checks(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
     result.push(
         "Native scheduled reminder at the configured lead time; persisted deduplication".into(),
     );
-    let snapshot = snapshot(app.state::<AppState>())?;
-    validate_backup(&snapshot.data)?;
+    let current = snapshot(app.state::<AppState>())?;
+    validate_backup(&current.data)?;
     result.push("Backup schema validates real native data".into());
     if let Some(window) = app.get_webview_window("main") {
         window.hide().map_err(|e| e.to_string())?;
@@ -217,6 +226,44 @@ fn checks(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
         "Real macOS tray exists; hiding and reopening the WebView preserves app state".into(),
     );
     invoke("start", json!({"taskId":task.id,"workMin":1,"breakMin":1}))?;
+    let backup_file =
+        PathBuf::from(std::env::var("ODAK_SMOKE_DIR").unwrap()).join("roundtrip.json");
+    std::env::set_var("ODAK_SMOKE_BACKUP_FILE", &backup_file);
+    tauri::async_runtime::block_on(export_backup(app.clone()))?;
+    if tauri::async_runtime::block_on(import_backup(app.clone())).is_ok() {
+        return Err("Import accepted an active timer".into());
+    }
+    invoke("cancel", json!({}))?;
+    let mut edited = task.clone();
+    edited.notes = "Changed after backup".into();
+    invoke("save_task", serde_json::to_value(edited).unwrap())?;
+    let recovery = tauri::async_runtime::block_on(import_backup(app.clone()))?
+        .ok_or("Import produced no recovery backup")?;
+    let prior: Backup =
+        serde_json::from_slice(&std::fs::read(recovery).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    if !prior
+        .data
+        .tasks
+        .iter()
+        .any(|t| t.notes == "Changed after backup")
+    {
+        return Err("Recovery backup lost previous data".into());
+    }
+    let restored = snapshot(app.state::<AppState>())?;
+    if restored.data.timer.phase != "work"
+        || restored
+            .data
+            .tasks
+            .iter()
+            .any(|t| t.notes == "Changed after backup")
+    {
+        return Err("JSON restore did not restore saved state".into());
+    }
+    std::env::remove_var("ODAK_SMOKE_BACKUP_FILE");
+    result.push(
+        "Native JSON file export/import, active-timer guard and automatic recovery backup".into(),
+    );
     result.push("Leave a real persisted work timer running for the process-restart check".into());
     Ok(result)
 }

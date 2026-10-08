@@ -23,7 +23,7 @@ DMG indirmeleri için SHA-256 dosyası da aynı Release’te bulunur.
 
 - **Bugün:** Günün gündemi ve sayaç. Görevin sağındaki ▶ ile ona bağlı oturum başlat; **Odaklanmaya başla** ile serbest çalış.
 - **Liste:** Tarih veya süre vermeden görev ekle. `…` menüsünden bugüne, yarına veya istediğin güne taşı.
-- **Takvim:** Ay görünümünde bir gün seç; o günün görevlerini, geçmişte tamamlananlar dahil gör. **Bu güne görev ekle** ile ileri bir tarihe plan yap.
+- **Takvim:** Ay görünümünde tekrarların gelecekteki günlerini de gör; bir gün seç; o günün görevlerini, geçmişte tamamlananlar dahil gör. **Bu güne görev ekle** ile ileri bir tarihe plan yap.
 - **Tamamlanan:** Görevin solundaki yuvarlakla tamamla. Buradaki ✓ yuvarlağına yeniden basınca görev eski gününe/listesine geri döner.
 - **Ayarlar:** Çalışma **1–90 dakika**, mola **1–30 dakika**; varsayılan **45/15**. Serbest giriş vardır, hazır süre ön ayarları yoktur.
 
@@ -35,8 +35,8 @@ DMG indirmeleri için SHA-256 dosyası da aynı Release’te bulunur.
 
 - Süresiz görev, tahmini süre, son bitirme zamanı ve tarih + saat aralığı desteklenir.
 - Saat aralıklı görevler başlamadan **15 dakika önce** sistem bildirimi gelir; bu süre ayarlardan değiştirilir. Başlangıç saati geçip bitişi henüz gelmemiş bir hatırlatma uygulama yeniden açıldığında gönderilir.
-- Etiket ve renk seç; Liste, Bugün, Tamamlanan ve Takvim’de etiket filtresi kullan.
-- Günlük, seçili haftalık günler ve aylık tekrarlar vardır. Her günün örneği bağımsızdır; birini tamamlamak seriyi bitirmez. Aylık 31 gibi bir tarih olmayan aylarda atlanır. Seriyi Liste’nin altından düzenle.
+- Etiket ve renk seç; aynı etiketin rengi tüm görevlerde tutarlı kalır. Liste, Bugün, Tamamlanan ve Takvim’de etiket filtresi kullan.
+- Günlük, seçili haftalık günler ve aylık tekrarlar vardır. Her günün örneği bağımsızdır; birini tamamlamak seriyi bitirmez. Aylık 31 gibi bir tarih olmayan aylarda atlanır. Seriyi Liste’nin altından düzenle. Seri düzenlemeleri gelecekteki başlanmamış örneklere uygulanır; tamamlananlar ve süre harcanmış örnekler korunur. Seriyi silmek gelecekteki başlanmamış örnekleri de kaldırır.
 - Göreve not ve alt görev ekle. Alt görevlerin hepsi bitince ana görevi tamamlaman önerilir; otomatik tamamlanmaz.
 - İstatistik simgesinden günlük/haftalık odak süresi, günler ve etiket dağılımını gör.
 - Varsayılan **⌘⇧K** global kısayolu küçük bir hızlı ekleme penceresi açar. Başlığı yazıp **Enter** ile tarihsiz listeye kaydet; **Esc** ile kapat. Kısayol ayarlardan değiştirilir.

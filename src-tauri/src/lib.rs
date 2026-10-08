@@ -120,11 +120,7 @@ fn execute(
             let mut task: Task = serde_json::from_value(payload).map_err(|e| e.to_string())?;
             task.title = task.title.trim().into();
             validate_task(&task)?;
-            if let Some(existing) = next.tasks.iter_mut().find(|t| t.id == task.id) {
-                *existing = task;
-            } else {
-                next.tasks.push(task);
-            }
+            upsert_task(&mut next, task, Local::now().date_naive());
             reminder_horizon(&mut next, Local::now());
         }
         "toggle_task" => {
@@ -154,7 +150,8 @@ fn execute(
             if next.timer.phase != "idle" && next.timer.task_id.as_deref() == Some(id) {
                 return Err("Önce bu görevin sayacını iptal edin.".into());
             }
-            // Removing a series stops future generation but retains its recorded instances and focus history.
+            // Removing a series preserves completed and started history.
+            prune_future_instances(&mut next, id, Local::now().date_naive());
             next.tasks.retain(|t| t.id != id);
         }
         "ensure_day" => {
@@ -254,7 +251,7 @@ fn notify_finish(app: &tauri::AppHandle, phase: &str) {
     let (title, body) = if phase == "work" {
         (
             "Çalışma bitti",
-            "Süren görevine eklendi. Görevin aktif; şimdi mola zamanı.",
+            "Çalışma oturumun kaydedildi. Şimdi mola zamanı.",
         )
     } else {
         (
@@ -317,17 +314,59 @@ fn validate_backup(data: &Data) -> Result<(), String> {
     {
         return Err("Duraklama kaydı geçersiz.".into());
     }
+    let effective_phase = if t.phase == "paused" {
+        t.paused_phase.as_deref().unwrap_or("idle")
+    } else {
+        t.phase.as_str()
+    };
+    if effective_phase == "work" && t.planned_min > 90
+        || effective_phase == "break" && t.planned_min > 30
+    {
+        return Err("Sayaç faz süresi geçersiz.".into());
+    }
+    if t.phase != "idle"
+        && t.task_id
+            .as_ref()
+            .is_some_and(|id| !data.tasks.iter().any(|task| &task.id == id))
+    {
+        return Err("Sayaç görevi yedekte bulunamadı.".into());
+    }
+    for timestamp in [t.started_at, t.paused_at].into_iter().flatten() {
+        if !(0..=253_402_214_400_000).contains(&timestamp) {
+            return Err("Sayaç zamanı geçersiz.".into());
+        }
+    }
+    if let (Some(started), Some(paused)) = (t.started_at, t.paused_at) {
+        if paused < started || t.paused_accumulated_ms > paused - started {
+            return Err("Duraklama zamanı geçersiz.".into());
+        }
+    }
+    if t.paused_accumulated_ms > 253_402_214_400_000 {
+        return Err("Duraklama birikimi geçersiz.".into());
+    }
     Ok(())
+}
+fn choose_backup_file(save: bool) -> Option<PathBuf> {
+    #[cfg(debug_assertions)]
+    if smoke::enabled() {
+        if let Some(file) = std::env::var_os("ODAK_SMOKE_BACKUP_FILE") {
+            return Some(PathBuf::from(file));
+        }
+    }
+    let dialog = rfd::FileDialog::new().add_filter("JSON", &["json"]);
+    if save {
+        dialog
+            .set_title("Odak yedeğini kaydet")
+            .set_file_name("odak-yedek.json")
+            .save_file()
+    } else {
+        dialog.set_title("Odak yedeğini geri yükle").pick_file()
+    }
 }
 #[tauri::command]
 async fn export_backup(app: tauri::AppHandle) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(file) = rfd::FileDialog::new()
-            .set_title("Odak yedeğini kaydet")
-            .set_file_name("odak-yedek.json")
-            .add_filter("JSON", &["json"])
-            .save_file()
-        else {
+        let Some(file) = choose_backup_file(true) else {
             return Ok(None);
         };
         let state = app.state::<AppState>();
@@ -351,11 +390,7 @@ async fn export_backup(app: tauri::AppHandle) -> Result<Option<String>, String> 
 #[tauri::command]
 async fn import_backup(app: tauri::AppHandle) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(file) = rfd::FileDialog::new()
-            .set_title("Odak yedeğini geri yükle")
-            .add_filter("JSON", &["json"])
-            .pick_file()
-        else {
+        let Some(file) = choose_backup_file(false) else {
             return Ok(None);
         };
         if std::fs::metadata(&file).map_err(|e| e.to_string())?.len() > 50_000_000 {
@@ -609,4 +644,50 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("Odak başlatılamadı");
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+    #[test]
+    fn json_backup_roundtrip_keeps_timer_sessions_and_settings() {
+        let mut d = Data::default();
+        d.timer.begin(None, "work", 45, 1000);
+        d.timer.pause(61000).unwrap();
+        d.settings.quiet_mode = true;
+        let bytes = serde_json::to_vec(&Backup {
+            format: "odak-backup".into(),
+            version: 1,
+            exported_at: 10,
+            data: d,
+        })
+        .unwrap();
+        let decoded: Backup = serde_json::from_slice(&bytes).unwrap();
+        validate_backup(&decoded.data).unwrap();
+        assert_eq!(decoded.data.timer.remaining_ms(1000000), 44 * 60000);
+        assert!(decoded.data.settings.quiet_mode);
+        let mut db = storage::open(std::path::Path::new(":memory:")).unwrap();
+        storage::save(&mut db, &decoded.data).unwrap();
+        assert_eq!(storage::load(&db).unwrap().timer.phase, "paused");
+    }
+    #[test]
+    fn import_rejects_invalid_phase_lengths_and_missing_task() {
+        let mut d = Data::default();
+        d.timer.begin(None, "break", 31, 1000);
+        assert!(validate_backup(&d).is_err());
+        d.timer.begin(Some("missing".into()), "work", 45, 1000);
+        assert!(validate_backup(&d).is_err());
+    }
+    #[test]
+    fn import_rejects_unknown_schema_and_impossible_pause() {
+        assert!(serde_json::from_value::<Backup>(
+            json!({"format":"odak-backup","version":1,"exportedAt":1,"data":{},"unknown":true})
+        )
+        .is_err());
+        let mut d = Data::default();
+        d.timer.begin(None, "work", 45, 1000);
+        d.timer.pause(61000).unwrap();
+        d.timer.paused_accumulated_ms = 62000;
+        assert!(validate_backup(&d).is_err());
+    }
 }

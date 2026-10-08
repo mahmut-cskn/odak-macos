@@ -36,3 +36,13 @@ npm run tauri build -- --target universal-apple-darwin
 ```
 
 Yerel entegrasyon: başka Odak süreci kapalıyken `npm run tauri build -- --debug --bundles app` yap. Boş bir geçici dizini `ODAK_SMOKE_DIR` olarak verip paketin `Contents/MacOS/odak` çalıştırılabilirini `ODAK_SMOKE_EXIT=1` ile başlat. Aynı dizinle ikinci kez `ODAK_SMOKE_RESTORE=1` ekleyerek başlat. Sonuçlar `native.json`, `ui.json` ve `native-ui.png` dosyalarına yazılır. Gerçek kullanıcı verisi kullanılmaz; test modu otomatik başlatma kaydını değiştirmez.
+
+## v1.1.0
+
+- 13 Rust testi, 10 TypeScript domain testi ve 6 Chromium UI testi geçti; `cargo clippy --all-targets -- -D warnings` temiz ve `npm audit` 0 açık.
+- Tekrar serisi düzenleme/silme testleri tamamlanan ve başlamış örneklerin geçmişini koruduğunu doğrular.
+- Etiket rengi tutarlılığı, lazy aylık takvim önizlemesi ve tarihsiz görevlerin tamamlandıkları gündeki takvim geçmişi test edildi.
+- JSON doğrulaması eksik göreve bağlı sayaç, geçersiz faz süresi, bilinmeyen şema ve imkânsız duraklama zamanı gibi bozuk yedekleri reddeder.
+- Native test gerçek JSON dosyasını dışa aktardı; aktif sayaçta içe aktarmayı reddetti; iptalden sonra yedeği geri yükleyip önceki veriler için otomatik kurtarma dosyası oluşturdu. [Native sonuç](native-test-v1.1.0.json).
+- İçe aktarılan çalışan sayaç gerçek süreç çıkışı ve yeniden açılış sonrasında doğru kaldı. [Yeniden başlatma sonucu](native-restart-v1.1.0.json).
+- Universal DMG yine Intel + Apple Silicon, ad-hoc imzalıdır. GitHub tag iş akışı DMG yanında eşleşen SHA-256 dosyasını da üretir.

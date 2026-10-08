@@ -1,0 +1,7 @@
+{
+  "checks": [
+    "Real process exit and reopen preserve timestamp-based countdown",
+    "Cancel after restart creates no session and preserves earned history"
+  ],
+  "passed": true
+}

@@ -10,3 +10,7 @@
 - JSON import replaces the complete database after validation and automatically writes a recovery backup; import is disabled during an active timer.
 - v1.0.0 includes all requested features that fit safely; v1.1.0 follows with validation and reliability improvements.
 - Native UNUserNotificationCenter adapts macOS permission requests and delivery; the required notification plugin remains initialized because its desktop permission API always reports Granted.
+- Editing or deleting a recurrence series rebuilds/removes only future unstarted active instances; completed and started history is preserved.
+- Calendar month dots preview recurrence rules without creating SQLite records; selecting a day materializes that day lazily.
+- Colors belong to label names; changing a label color updates all tasks sharing that label.
+- Calendar history includes tasks on their scheduled day and actual completion day, including undated tasks, without changing their original placement.
