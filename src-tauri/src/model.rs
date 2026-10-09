@@ -356,24 +356,54 @@ pub fn materialize(data: &mut Data, date: NaiveDate) -> bool {
         if data.tasks.iter().any(|t| t.id == id) {
             continue;
         }
-        let mut instance = template.clone();
-        instance.id = id;
-        instance.series_id = Some(template.id);
-        instance.recurrence_rule = None;
-        instance.status = "active".into();
-        instance.completed_at = None;
-        instance.scheduled_date = Some(date.to_string());
-        instance.start_at = shift_time(template.start_at, date);
-        instance.end_at = template
-            .end_at
-            .zip(template.start_at)
-            .and_then(|(end, start)| instance.start_at.map(|v| v + end - start));
-        instance.due_at = shift_time(template.due_at, date);
-        instance.subtasks.iter_mut().for_each(|s| s.done = false);
-        data.tasks.push(instance);
+        data.tasks.push(recurrence_instance(&template, date));
         changed = true;
     }
     changed
+}
+fn recurrence_instance(template: &Task, date: NaiveDate) -> Task {
+    let mut instance = template.clone();
+    instance.id = format!("{}@{}", template.id, date);
+    instance.series_id = Some(template.id.clone());
+    instance.recurrence_rule = None;
+    instance.status = "active".into();
+    instance.completed_at = None;
+    instance.scheduled_date = Some(date.to_string());
+    instance.start_at = shift_time(template.start_at, date);
+    instance.end_at = template
+        .end_at
+        .zip(template.start_at)
+        .and_then(|(end, start)| instance.start_at.map(|value| value + end - start));
+    instance.due_at = shift_time(template.due_at, date);
+    instance
+        .subtasks
+        .iter_mut()
+        .for_each(|subtask| subtask.done = false);
+    instance
+}
+/// Materialize only the explicitly selected lazy occurrence when its focus session starts.
+pub fn prepare_focus_start(data: &mut Data, id: &str, today: NaiveDate) -> Result<(), String> {
+    if data.tasks.iter().any(|task| task.id == id) {
+        return validate_focus_start(data, id, today);
+    }
+    let (series, day) = id.rsplit_once('@').ok_or("Görev bulunamadı.")?;
+    let date = NaiveDate::parse_from_str(day, "%Y-%m-%d").map_err(|_| "Geçersiz tarih.")?;
+    let template = data
+        .tasks
+        .iter()
+        .find(|task| {
+            task.id == series
+                && task.status == "active"
+                && task.recurrence_rule.is_some()
+                && task.series_id.is_none()
+        })
+        .ok_or("Tekrarlayan görev bulunamadı.")?;
+    if date < today || !occurs(template, date) {
+        return Err("Bu tekrar gününde odak başlatılamaz.".into());
+    }
+    let instance = recurrence_instance(template, date);
+    data.tasks.push(instance);
+    Ok(())
 }
 pub fn finish_due(data: &mut Data, now: i64) -> Vec<String> {
     let mut finished = vec![];
@@ -562,6 +592,80 @@ mod tests {
     use super::*;
     fn task() -> Task {
         serde_json::from_value(serde_json::json!({"id":"task","title":"Task","label":"İş","color":"#438470","notes":"","status":"active","completedAt":null,"estimateMin":null,"scheduledDate":"2026-10-01","startAt":null,"endAt":null,"dueAt":null,"recurrenceRule":null,"seriesId":null,"subtasks":[],"createdAt":0})).unwrap()
+    }
+    #[test]
+    fn lazy_focus_start_creates_only_selected_occurrence_and_preserves_live_data() {
+        let mut data = Data::default();
+        let mut template = task();
+        template.id = "monthly".into();
+        template.scheduled_date = Some("2026-10-07".into());
+        template.recurrence_rule = Some(Recurrence {
+            frequency: "monthly".into(),
+            weekdays: vec![],
+            month_day: 7,
+        });
+        data.tasks.push(template);
+        data.tasks.push(task());
+        data.timer.begin(Some("task".into()), "work", 45, 1000);
+        let before = serde_json::to_value(&data).unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        prepare_focus_start(&mut data, "monthly@2026-11-07", today).unwrap();
+        assert_eq!(data.tasks.len(), 3);
+        assert_eq!(data.tasks[2].series_id.as_deref(), Some("monthly"));
+        assert_eq!(data.tasks[2].scheduled_date.as_deref(), Some("2026-11-07"));
+        validate_task(&data.tasks[2]).unwrap();
+        assert_eq!(serde_json::to_value(&data.timer).unwrap(), before["timer"]);
+        assert_eq!(
+            serde_json::to_value(&data.tasks[..2]).unwrap(),
+            before["tasks"]
+        );
+        assert_eq!(
+            serde_json::to_value(&data.sessions).unwrap(),
+            before["sessions"]
+        );
+        prepare_focus_start(&mut data, "monthly@2026-11-07", today).unwrap();
+        assert_eq!(data.tasks.len(), 3);
+    }
+    #[test]
+    fn lazy_focus_start_rejects_past_invalid_and_missing_series_without_writes() {
+        let mut data = Data::default();
+        let mut template = task();
+        template.recurrence_rule = Some(Recurrence {
+            frequency: "monthly".into(),
+            weekdays: vec![],
+            month_day: 1,
+        });
+        data.tasks.push(template);
+        let before = serde_json::to_value(&data).unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        for id in [
+            "task@2026-10-01",
+            "task@2026-11-02",
+            "task@bad-date",
+            "missing@2026-11-01",
+        ] {
+            assert!(prepare_focus_start(&mut data, id, today).is_err());
+            assert_eq!(serde_json::to_value(&data).unwrap(), before);
+        }
+    }
+    #[test]
+    fn lazy_focus_start_never_recreates_a_completed_occurrence() {
+        let mut data = Data::default();
+        let mut completed = task();
+        completed.id = "series@2026-11-01".into();
+        completed.series_id = Some("series".into());
+        completed.scheduled_date = Some("2026-11-01".into());
+        completed.status = "completed".into();
+        completed.completed_at = Some(1000);
+        data.tasks.push(completed);
+        let before = serde_json::to_value(&data).unwrap();
+        assert!(prepare_focus_start(
+            &mut data,
+            "series@2026-11-01",
+            NaiveDate::from_ymd_opt(2026, 10, 9).unwrap()
+        )
+        .is_err());
+        assert_eq!(serde_json::to_value(&data).unwrap(), before);
     }
     #[test]
     fn early_finish_records_elapsed_work_completes_task_and_is_not_repeatable() {

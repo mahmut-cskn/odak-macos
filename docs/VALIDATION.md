@@ -117,3 +117,16 @@ Yerel doğrulama: 9 Ekim 2026.
 - [Bitir düğmesi](screenshot-finish.png), [onay penceresi](screenshot-finish-confirm.png) ve [zorunlu hızlı etiket](screenshot-quick-label.png) izole örneklerle görüntülendi.
 - Kullanıcının gerçek SQLite dosyasına doğrudan yazılmadı; kurulu Odak kapatılmadı, yeniden başlatılmadı veya üzerine kurulmadı. UI testleri izole mock verileri, native domain testleri bellek/geçici veritabanlarını kullanır.
 - Üretim TypeScript/Vite ve universal Tauri derlemesi başarılı. `lipo` x86_64 + arm64 gösteriyor; `codesign --verify --deep --strict` ve `hdiutil verify` geçti. Salt okunur bağlanan DMG'de `/Applications` kısayolu, Finder yerleşimi ve v1.5.0 uygulaması var; paket içindeki çalıştırılabilirin SHA-256 değeri derlenen kopyayla aynı. SHA-256 dosyası Release'e eklenir.
+
+## v1.6.0 — sıradaki odak ve tekil tekrar seçimi
+
+Yerel doğrulama: 9 Ekim 2026.
+
+- 25 TypeScript, 36 Rust, 29 Chromium UI ve 4 Python testi geçti: toplam 94. `cargo clippy --all-targets --locked -- -D warnings` temiz.
+- Bugünün 5 → 4 → 3 yıldızlı görevlerinden sonra genel listedeki 5 yıldızlı görev öneriliyor. Biten oturumun eski seçimi temizleniyor; yeni önerinin kayıtlı pomodoro süresi yükleniyor. Boş gündem/listede görevsiz başlatma kapalı.
+- Doğal çalışma bitişinde görev aktif kalırken panel **Mola zamanı** ve sonraki öneriyi gösteriyor. Mola bittikten sonra Devam et önerilen görevle başlıyor. Molanın çalışır ve duraklatılmış durumlarında iptal düğmesi yok; onaylı Bitir önceden kazanılan süreyi değiştirmiyor. Duraklatılmış molada sıradaki görevi seçmek bütün veri alanlarını koruyor; Bitir önceki görevi tamamlıyor ve sıradaki seçimi değiştirmiyor.
+- Tekrar serisinde geçmiş örnek eleniyor, en yakın aktif örnek seçiliyor ve daha uzak örnekler gösterilmiyor. Aynı isimli farklı görev/seriler ayrı kalıyor. Aylık tekrarın 29 gün sonraki üretilmemiş örneği, 59 gün sonraki kayıtlı örnekten önce görünüyor; aylık 31 Şubat gibi olmayan günler atlanıyor.
+- Tekrar seçmek görev/oturum/sayacı değiştirmiyor. Başlatma sadece seçilen gelecekteki örneği oluşturuyor; diğer örnekler ve seriler korunuyor. Native testler geçmiş/geçersiz/eksik seri seçimlerini yazmadan reddediyor, tamamlanan örneği yeniden üretmiyor ve aynı örneği iki kez oluşturmuyor.
+- [Sıradaki iş önerisi](screenshot-focus-suggestion.png) ve [molada öneri](screenshot-break-suggestion.png) izole örneklerle görüntülendi ve görsel olarak kontrol edildi.
+- Kullanıcı verisi doğrudan değiştirilmedi, SQLite şeması dönüştürülmedi ve kurulu Odak kapatılmadı veya yeniden başlatılmadı. Gerçek kullanıcı yerine test verileri ve geçici/bellek veritabanları kullanıldı.
+- Üretim TypeScript/Vite ve universal Tauri build başarılı. `lipo` x86_64 + arm64, Info.plist v1.6.0 gösteriyor; ad-hoc imza ve DMG CRC kontrolleri geçti. Salt okunur bağlanan pakette Applications kısayolu ve Finder yerleşimi var; paket çalıştırılabilirinin SHA-256 değeri derlenen uygulamayla aynı. DMG'ye eşleşen SHA-256 dosyası hazırlandı.

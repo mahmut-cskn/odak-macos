@@ -325,7 +325,7 @@ fn execute(
             let id = payload["taskId"]
                 .as_str()
                 .ok_or("Önce adı olan bir görev seçin.")?;
-            validate_focus_start(&next, id, Local::now().date_naive())?;
+            prepare_focus_start(&mut next, id, Local::now().date_naive())?;
             let task = Some(id.to_string());
             next.timer.work_min = work as u32;
             next.timer.break_min = rest as u32;

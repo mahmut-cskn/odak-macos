@@ -276,6 +276,100 @@ export function priorityFor(task: Task, priorities: Record<string, number>) {
     0
   );
 }
+/** One active occurrence per series, including a lazy preview beyond the reminder horizon. */
+export function focusCandidates(tasks: Task[], today = dayKey()) {
+  const available = tasks.filter(
+    (task) =>
+      task.status === "active" &&
+      !task.recurrenceRule &&
+      !isPastTask(task, today),
+  );
+  for (const template of tasks.filter(
+    (task) =>
+      task.status === "active" &&
+      task.recurrenceRule &&
+      !task.seriesId &&
+      task.scheduledDate,
+  )) {
+    const first =
+      template.scheduledDate! > today ? template.scheduledDate! : today;
+    for (let offset = 0; offset < 366; offset++) {
+      const date = shiftDay(first, offset);
+      if (!occursOn(template, date)) continue;
+      const existing = tasks.find(
+        (task) => task.seriesId === template.id && task.scheduledDate === date,
+      );
+      if (existing?.status === "completed") continue;
+      if (!existing) {
+        const shiftTime = (value: number | null) => {
+          if (value === null) return null;
+          const original = new Date(value),
+            shifted = parseDay(date);
+          shifted.setHours(
+            original.getHours(),
+            original.getMinutes(),
+            original.getSeconds(),
+            original.getMilliseconds(),
+          );
+          return shifted.getTime();
+        };
+        const startAt = shiftTime(template.startAt);
+        available.push({
+          ...template,
+          id: `${template.id}@${date}`,
+          seriesId: template.id,
+          recurrenceRule: null,
+          scheduledDate: date,
+          startAt,
+          endAt:
+            startAt !== null &&
+            template.endAt !== null &&
+            template.startAt !== null
+              ? startAt + template.endAt - template.startAt
+              : null,
+          dueAt: shiftTime(template.dueAt),
+          completedAt: null,
+          subtasks: template.subtasks.map((subtask) => ({
+            ...subtask,
+            done: false,
+          })),
+        });
+      }
+      break;
+    }
+  }
+  const unique = new Map<string, Task>();
+  for (const task of available) {
+    const key = task.seriesId ? `series:${task.seriesId}` : `task:${task.id}`;
+    const previous = unique.get(key);
+    if (
+      !previous ||
+      (task.scheduledDate || "") < (previous.scheduledDate || "")
+    )
+      unique.set(key, task);
+  }
+  return [...unique.values()];
+}
+/** Today's highest priority first; use the undated list only when today's pool is empty. */
+export function recommendFocus(
+  candidates: Task[],
+  priorities: Record<string, number>,
+  today = dayKey(),
+  previousTaskId: string | null = null,
+) {
+  const available = candidates.filter((task) => task.id !== previousTaskId);
+  const todayTasks = tasksForDay(available, today);
+  const pool = todayTasks.length
+    ? todayTasks
+    : available.filter((task) => !task.scheduledDate);
+  return [...pool].sort(
+    (a, b) =>
+      priorityFor(b, priorities) - priorityFor(a, priorities) ||
+      (a.startAt ?? a.dueAt ?? Infinity) - (b.startAt ?? b.dueAt ?? Infinity) ||
+      a.createdAt - b.createdAt ||
+      a.id.localeCompare(b.id),
+  )[0];
+}
 export function taskPomodoroMin(
   task: Task,
   durations: Record<string, number>,

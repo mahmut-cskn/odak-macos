@@ -33,9 +33,13 @@ DMG indirmeleri için SHA-256 dosyası da aynı Release’te bulunur.
 
 **Duraklat / Devam et** kalan süreyi korur. **İptal et** yalnızca o anki oturumu siler, hiçbir süre eklemez; önceden bitmiş oturumlar korunur. Çalışma bitince mola başlar; mola sonunda **Devam et** veya **5 dk daha** seçersin. Uygulamanın penceresini kapatmak sayacı durdurmaz. Menü çubuğundan **Çık** ile tamamen kapatsan bile tekrar açıldığında sayaç kayıtlı zaman damgasından hesaplanır. Uygulama tamamen kapalıyken bildirim gönderilemez; açılınca süresi geçen oturumlar kaydedilir.
 
-İşin erken biterse **İptal et** yanındaki **Bitir** düğmesine bas. **Evet, bitir** onayından sonra görev Tamamlanan’a taşınır, sayaç kapanır ve yalnızca gerçekten çalışılan süre istatistiklere eklenir. Örneğin 45 dakikalık oturumu 20 dakikada bitirmek grafiğe 20 dakika ekler; duraklamalar sayılmaz. Mola sırasında **Bitir**, görevi tamamlar ve molayı kapatır; önceki odak süresi korunur, mola odak süresine eklenmez. Tamamlanan’daki yuvarlakla görevi geri açmak kaydedilmiş çalışma süresini silmez.
+İşin erken biterse **İptal et** yanındaki **Bitir** düğmesine bas. **Evet, bitir** onayından sonra görev Tamamlanan’a taşınır, sayaç kapanır ve yalnızca gerçekten çalışılan süre istatistiklere eklenir. Örneğin 45 dakikalık oturumu 20 dakikada bitirmek grafiğe 20 dakika ekler; duraklamalar sayılmaz. Mola sırasında **Bitir**, önceki görevi tamamlar ve molayı kapatır; önceki odak süresi korunur, mola odak süresine eklenmez. Tamamlanan’daki yuvarlakla görevi geri açmak kaydedilmiş çalışma süresini silmez.
 
-Mola sırasında **İptal et** yalnızca molayı kapatır. Görev aktif kalır; tamamlanmış veya başarısız sayılmaz. Önceki çalışma oturumunun süresi korunur.
+Mola sırasında **İptal et** düğmesi yoktur; molayı **Duraklat / Devam et** ile yönetebilir veya onaylı **Bitir** ile kapatabilirsin. Mola başlığında önceki görev tutulmaz; **Mola zamanı** görünür. Süre dolması görevi kendiliğinden tamamlamaz.
+
+Panelde **Sıradaki odak** önerisi, bugünün aktif görevlerini 5 yıldızdan başlayıp 4, 3, 2 ve 1 yıldıza doğru değerlendirir; yıldızsız görevler en son gelir. Bugünde başka iş kalmadıysa tarihsiz listedeki en yüksek yıldızlı görev önerilir. Eşit öncelikte önce plan saati, sonra oluşturma sırası kullanılır. Süresi dolan veya Bitir ile kapatılan oturumun görevi sonraki öneride seçili kalmaz; istersen aktif bir görevi seçim listesinden elle tekrar seçebilirsin. Mola sırasında sıradaki görevi seçmek mevcut molayı veya süre kaydını değiştirmez.
+
+Görev seçim listesinde her tekrar serisinden yalnızca **en yakın tamamlanmamış bugün/gelecek örneği** görünür; tarihi de yanında yazılır. Örneğin aylık işin sıradaki örneği 29 gün sonradaysa o görünür, 59 gün sonraki kopyası görünmez. Henüz kaydedilmemiş örnekler seçimde salt okunur olarak hesaplanır; sadece odak başlatıldığında seçilen günün kaydı oluşturulur. Aynı başlığa sahip farklı işler birbirine karıştırılmaz; geçmiş ve diğer tekrar kayıtları silinmez.
 
 Görev, seri, alt görev veya etiket silme; oturum iptali ve JSON ile verileri değiştirme işlemleri önce onay ister. **Vazgeç** hiçbir değişiklik yapmaz.
 
@@ -71,7 +75,7 @@ Etiket seçim listesi `labels.json`, yıldız öncelikleri `priorities.json`, g�
 
 ### Çalışan sayaç sırasında sürüm güncellemesi
 
-Yeni DMG’yi sayaç çalışırken mevcut uygulamanın üzerine kurma. Oturumunu bitir, menü çubuğundan **Çık** seç, sonra yeni paketi Applications’a sürükle. Uygulama verileri ayrı app-data klasöründe kalır; v1.5.0 için SQLite şema değişikliği veya eski görev dönüştürmesi yoktur.
+Yeni DMG’yi sayaç çalışırken mevcut uygulamanın üzerine kurma. Oturumunu bitir, menü çubuğundan **Çık** seç, sonra yeni paketi Applications’a sürükle. Uygulama verileri ayrı app-data klasöründe kalır; v1.6.0 için SQLite şema değişikliği veya eski görev dönüştürmesi yoktur.
 
 ![Odak istatistikleri](docs/screenshot-stats.png)
 

@@ -14,7 +14,129 @@ import {
   type Session,
   taskPomodoroMin,
   validatePomodoroMin,
+  focusCandidates,
+  recommendFocus,
 } from "../src/domain";
+describe("next focus recommendations and unique recurrence choices", () => {
+  const task = (id: string, date: string | null) => ({
+    ...newTask(date),
+    id,
+    title: "Same title",
+    label: "İş",
+    createdAt: 0,
+  });
+  it("prioritizes today's 5, 4 and 3 stars before a 5-star backlog task", () => {
+    const today = "2026-10-09",
+      tasks = [
+        task("three", today),
+        task("four", today),
+        task("five", today),
+        task("backlog", null),
+      ];
+    const priorities = { three: 3, four: 4, five: 5, backlog: 5 };
+    expect(
+      recommendFocus(focusCandidates(tasks, today), priorities, today)?.id,
+    ).toBe("five");
+    tasks[2].status = "completed";
+    expect(
+      recommendFocus(focusCandidates(tasks, today), priorities, today)?.id,
+    ).toBe("four");
+    tasks[1].status = "completed";
+    expect(
+      recommendFocus(focusCandidates(tasks, today), priorities, today)?.id,
+    ).toBe("three");
+    tasks[0].status = "completed";
+    expect(
+      recommendFocus(focusCandidates(tasks, today), priorities, today)?.id,
+    ).toBe("backlog");
+  });
+  it("moves away from the just-finished work without completing or removing its task", () => {
+    const today = "2026-10-09",
+      tasks = [
+        task("previous", today),
+        task("next", null),
+        task("future", "2026-10-10"),
+      ];
+    const before = JSON.stringify(tasks);
+    expect(
+      recommendFocus(
+        focusCandidates(tasks, today),
+        { previous: 5, next: 4, future: 5 },
+        today,
+        "previous",
+      )?.id,
+    ).toBe("next");
+    expect(JSON.stringify(tasks)).toBe(before);
+    expect(
+      recommendFocus(focusCandidates([tasks[2]], today), { future: 5 }, today),
+    ).toBeUndefined();
+  });
+  it("keeps the nearest eligible occurrence per series while preserving different tasks with the same name", () => {
+    const instance = (id: string, date: string) => ({
+      ...task(id, date),
+      seriesId: "weekly",
+    });
+    const tasks = [
+      instance("later", "2026-10-19"),
+      instance("past", "2026-10-05"),
+      instance("nearest", "2026-10-12"),
+      task("separate", null),
+    ];
+    const before = JSON.stringify(tasks);
+    expect(focusCandidates(tasks, "2026-10-09").map((t) => t.id)).toEqual([
+      "nearest",
+      "separate",
+    ]);
+    expect(JSON.stringify(tasks)).toBe(before);
+  });
+  it("previews a monthly task 29 days away instead of its stored instance 59 days away", () => {
+    const template = task("monthly", "2026-10-07");
+    template.recurrenceRule = {
+      frequency: "monthly",
+      weekdays: [],
+      monthDay: 7,
+    };
+    const far = {
+      ...task("monthly@2026-12-07", "2026-12-07"),
+      seriesId: template.id,
+    };
+    const before = JSON.stringify([template, far]);
+    const choices = focusCandidates([template, far], "2026-10-09");
+    expect(choices).toHaveLength(1);
+    expect(choices[0].id).toBe("monthly@2026-11-07");
+    expect(taskPomodoroMin(choices[0], { monthly: 30 }, 45)).toBe(30);
+    expect(JSON.stringify([template, far])).toBe(before);
+  });
+  it("skips a completed recurrence day, shifts its schedule and resets only the preview checklist", () => {
+    const template = task("daily", "2026-10-08");
+    template.recurrenceRule = { frequency: "daily", weekdays: [], monthDay: 8 };
+    template.startAt = new Date("2026-10-08T10:00:00").getTime();
+    template.endAt = template.startAt + 60000;
+    template.subtasks = [{ id: "step", title: "Check", done: true }];
+    const completed = {
+      ...task("daily@2026-10-09", "2026-10-09"),
+      seriesId: template.id,
+      status: "completed" as const,
+    };
+    const choices = focusCandidates([template, completed], "2026-10-09");
+    expect(choices[0].scheduledDate).toBe("2026-10-10");
+    expect(dayKey(new Date(choices[0].startAt!))).toBe("2026-10-10");
+    expect(choices[0].endAt! - choices[0].startAt!).toBe(60000);
+    expect(choices[0].subtasks[0].done).toBe(false);
+    expect(template.subtasks[0].done).toBe(true);
+  });
+  it("skips nonexistent monthly days rather than showing a duplicate future occurrence", () => {
+    const template = task("month-end", "2026-01-31");
+    template.recurrenceRule = {
+      frequency: "monthly",
+      weekdays: [],
+      monthDay: 31,
+    };
+    expect(focusCandidates([template], "2026-02-01")[0].scheduledDate).toBe(
+      "2026-03-31",
+    );
+  });
+});
 describe("task Pomodoro duration", () => {
   it("requires a whole duration within 1–90 and keeps total estimates separate", () => {
     for (const invalid of ["", 0, 91, 1.5])

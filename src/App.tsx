@@ -36,6 +36,8 @@ import { action, call, load, subscribe } from "./api";
 import {
   calendarPreview,
   dailyTrend,
+  focusCandidates,
+  recommendFocus,
   isPastTask,
   priorityFor,
   taskPomodoroMin,
@@ -161,12 +163,31 @@ export default function App() {
       cleanups.forEach((fn) => fn());
     };
   }, [reload]);
-  const chosenTask = snapshot?.data.tasks.find(
-    (t) =>
-      t.id ===
-      (focusTaskId ||
-        (snapshot.data.timer.breakReady ? snapshot.data.timer.taskId : "")),
+  const focusTasks = snapshot ? focusCandidates(snapshot.data.tasks) : [];
+  const lastWork = snapshot?.data.sessions
+    .filter((session) => session.type === "work")
+    .reduce<Session | undefined>(
+      (latest, session) =>
+        !latest || session.endedAt > latest.endedAt ? session : latest,
+      undefined,
+    );
+  const suggestion = recommendFocus(
+    focusTasks,
+    snapshot?.priorities || {},
+    dayKey(),
+    lastWork && dayKey(new Date(lastWork.endedAt)) === dayKey()
+      ? lastWork.taskId
+      : null,
   );
+  const selectedFocusTask =
+    focusTasks.find((task) => task.id === focusTaskId) || suggestion;
+  useEffect(() => {
+    if (lastWork)
+      setFocusTaskId((selected) =>
+        selected === lastWork.taskId ? "" : selected,
+      );
+  }, [lastWork?.id]);
+  const chosenTask = selectedFocusTask;
   const chosenDuration =
     chosenTask && snapshot
       ? taskPomodoroMin(
@@ -343,15 +364,24 @@ export default function App() {
   const priorities = snapshot.priorities || {};
   const taskDurations = snapshot.taskDurations || {};
   const calendarReadOnly = tab === "calendar" && day < dayKey();
-  const focusTasks = data.tasks.filter(
-    (t) => t.status === "active" && !t.recurrenceRule && !isPastTask(t),
-  );
-  const selectedFocusTask = focusTasks.find(
-    (t) => t.id === (focusTaskId || (timer.breakReady ? timer.taskId : "")),
-  );
-  const timerTask = active
+  const resting = timer.phase === "break" || timer.pausedPhase === "break";
+  const working = active && !resting;
+  const timerTask = working
     ? activeTask
-    : selectedFocusTask || (timer.breakReady ? activeTask : undefined);
+    : resting
+      ? undefined
+      : selectedFocusTask;
+  const pickerTasks =
+    working && activeTask
+      ? [
+          activeTask,
+          ...focusTasks.filter(
+            (task) =>
+              task.id !== activeTask.id &&
+              !(activeTask.seriesId && task.seriesId === activeTask.seriesId),
+          ),
+        ]
+      : focusTasks;
   let tasks =
     tab === "today"
       ? tasksForDay(data.tasks, dayKey()).filter((t) => t.status === "active")
@@ -500,9 +530,7 @@ export default function App() {
                     />
                   ) : (
                     <span className="timer-title">
-                      {active || timer.breakReady
-                        ? "Önceki odak oturumu"
-                        : "Bir görev seç"}
+                      {resting ? "Mola zamanı" : "Bir görev seç"}
                     </span>
                   )}
                   <span className="eyebrow timer-phase">
@@ -546,20 +574,22 @@ export default function App() {
                           {timer.phase === "paused" ? "Devam et" : "Duraklat"}
                         </button>
                         <div className="timer-secondary-actions">
-                          <button
-                            className="cancel-btn"
-                            disabled={busy}
-                            onClick={() =>
-                              requestDelete(
-                                "Bu oturumu iptal etmek istiyor musun?",
-                                "Şu anki oturum silinecek ve bu oturum için süre yazılmayacak. Önceden biten oturumlar korunur.",
-                                () => run("cancel", { confirmed: true }),
-                              )
-                            }
-                          >
-                            <X size={15} />
-                            İptal et
-                          </button>
+                          {!resting && (
+                            <button
+                              className="cancel-btn"
+                              disabled={busy}
+                              onClick={() =>
+                                requestDelete(
+                                  "Bu oturumu iptal etmek istiyor musun?",
+                                  "Şu anki oturum silinecek ve bu oturum için süre yazılmayacak. Önceden biten oturumlar korunur.",
+                                  () => run("cancel", { confirmed: true }),
+                                )
+                              }
+                            >
+                              <X size={15} />
+                              İptal et
+                            </button>
+                          )}
                           {activeTask && (
                             <button
                               className="finish-btn"
@@ -577,7 +607,12 @@ export default function App() {
                                       startedAt: timer.startedAt,
                                       confirmed: true,
                                     });
-                                    if (finished) setFocusTaskId("");
+                                    if (finished)
+                                      setFocusTaskId((selected) =>
+                                        selected === timer.taskId
+                                          ? ""
+                                          : selected,
+                                      );
                                     return finished;
                                   },
                                   {
@@ -627,28 +662,51 @@ export default function App() {
                 <div className="focus-picker">
                   <select
                     aria-label="Odaklanılacak görev"
-                    disabled={active || busy}
+                    disabled={working || busy}
                     value={
-                      (active ? activeTask?.id : selectedFocusTask?.id) || ""
+                      (working ? activeTask?.id : selectedFocusTask?.id) || ""
                     }
                     onChange={(e) => setFocusTaskId(e.target.value)}
                   >
                     <option value="">Hangi işe odaklanacaksın?</option>
-                    {activeTask &&
-                      !focusTasks.some((t) => t.id === activeTask.id) && (
-                        <option value={activeTask.id}>
-                          {activeTask.title}
-                          {activeTask.label ? ` · ${activeTask.label}` : ""}
-                        </option>
-                      )}
-                    {focusTasks.map((t) => (
+                    {pickerTasks.map((t) => (
                       <option key={t.id} value={t.id}>
                         {t.title}
                         {t.label ? ` · ${t.label}` : ""}
+                        {t.scheduledDate
+                          ? ` · ${t.scheduledDate === dayKey() ? "Bugün" : parseDay(t.scheduledDate).toLocaleDateString("tr-TR", { day: "numeric", month: "short", year: "numeric" })}`
+                          : ""}
                       </option>
                     ))}
                   </select>
                 </div>
+                {!working && suggestion && (
+                  <div
+                    className="focus-suggestion"
+                    aria-label="Sıradaki odak önerisi"
+                  >
+                    <Star size={14} />
+                    <span>
+                      Sıradaki odak:{" "}
+                      <button
+                        aria-label={`Önerilen görevi seç: ${suggestion.title}`}
+                        onClick={() => setFocusTaskId(suggestion.id)}
+                      >
+                        {suggestion.title}
+                      </button>
+                    </span>
+                    <span className="suggestion-priority">
+                      {priorityFor(suggestion, priorities)
+                        ? `${priorityFor(suggestion, priorities)} yıldız`
+                        : "Öncelik verilmedi"}
+                    </span>
+                    <span>
+                      {tasksForDay([suggestion], dayKey()).length
+                        ? "Bugün"
+                        : "Liste"}
+                    </span>
+                  </div>
+                )}
                 <div className="timer-footer">
                   <div className="duration-fields">
                     <label>

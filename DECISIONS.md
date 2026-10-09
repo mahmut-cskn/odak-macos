@@ -44,3 +44,11 @@
 - Labels are required in task creation, editing and quick add; unchanged legacy blank labels remain valid for internal moves and old backups without migrating existing records.
 - The quick-add window is 480 by 260 pixels to fit its required label and Pomodoro duration fields.
 - v1.5.0 is packaged without replacing, quitting or restarting the installed app, and no existing user database is directly modified.
+- v1.6.0 recommends today's highest-priority active task before the undated list, descending from five stars to unrated; equal priorities use schedule, creation time and ID for stable ordering.
+- The latest work task finished today is excluded from automatic recommendations without completing or deleting it; users can explicitly select it again for additional work.
+- A finished work session clears its prior selection; breaks show a neutral break title and the next recommendation, and changing the next selection preserves the running break.
+- Cancel is hidden during running or paused breaks; Pause/Resume and the existing confirmed Finish action remain available.
+- The focus picker groups recurrence instances by series ID, retains only the nearest active nonpast occurrence and displays dates; unrelated tasks with identical titles remain separate.
+- Distant recurrence choices are read-only projections; starting one materializes only that selected occurrence in the existing SQLite transaction, with no schema migration or historical changes.
+- An ongoing work session stays pinned and locked in the picker even if another occurrence would normally be the nearest, preserving the active timer without duplicate series choices.
+- v1.6.0 is built and published without replacing or restarting the installed app or directly writing to the user's database.

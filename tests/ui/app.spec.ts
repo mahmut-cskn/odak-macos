@@ -153,16 +153,41 @@ async function setup(page: Page) {
           case "delete_task":
             data.tasks = data.tasks.filter((t: any) => t.id !== p.id);
             break;
-          case "start":
+          case "start": {
             if (!p.taskId) throw new Error("Bir görev seçin.");
+            if (!data.tasks.some((task: any) => task.id === p.taskId)) {
+              const [seriesId, scheduledDate] = p.taskId.split("@");
+              const template = data.tasks.find(
+                (task: any) => task.id === seriesId && task.recurrenceRule,
+              );
+              if (!template) throw new Error("Görev bulunamadı.");
+              data.tasks.push({
+                ...template,
+                id: p.taskId,
+                seriesId,
+                scheduledDate,
+                recurrenceRule: null,
+                status: "active",
+                completedAt: null,
+                subtasks: template.subtasks.map((subtask: any) => ({
+                  ...subtask,
+                  done: false,
+                })),
+              });
+            }
             data.timer = {
               ...data.timer,
               ...p,
               phase: "work",
               plannedMin: p.workMin,
               startedAt: Date.now() - ((window as any).odakStartOffset || 0),
+              pausedPhase: null,
+              pausedAt: null,
+              pausedAccumulatedMs: 0,
+              breakReady: false,
             };
             break;
+          }
           case "pause":
             data.timer.pausedPhase = data.timer.phase;
             data.timer.phase = "paused";
@@ -356,13 +381,13 @@ test("settings save bounds, quiet mode and shortcut; UI screenshots", async ({
   );
 });
 
-test("named focus is required; inline title edit keeps the timer untouched", async ({
+test("recommended focus remains named; inline title edit keeps the timer untouched", async ({
   page,
 }) => {
   await expect(page.locator(".brand-name")).toHaveText("Odak");
   await expect(
     page.getByRole("button", { name: "Odaklanmaya başla" }),
-  ).toBeDisabled();
+  ).toBeEnabled();
   await page.getByLabel("Odaklanılacak görev").selectOption("report");
   await page.getByRole("button", { name: "Odaklanmaya başla" }).click();
   const before: any = await page.evaluate(() =>
@@ -1028,7 +1053,7 @@ test("finish from pause excludes paused time", async ({ page }) => {
   expect(finished.data.tasks[0].status).toBe("completed");
 });
 
-test("break cancellation leaves the task active while Finish completes it without adding break time", async ({
+test("break exposes Pause and Finish without cancellation or extra focus credit", async ({
   page,
 }) => {
   await page.evaluate(() => {
@@ -1053,27 +1078,29 @@ test("break cancellation leaves the task active while Finish completes it withou
     (window as any).odakNotify();
   });
   await expect(page.getByText("MOLA ZAMANI", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "İptal et", exact: true }).click();
-  await page
-    .getByRole("alertdialog")
-    .getByRole("button", { name: "Evet, onayla", exact: true })
-    .click();
-  const cancelled: any = await page.evaluate(() =>
+  await expect(
+    page.getByRole("button", { name: "İptal et", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator(".timer-title")).toHaveText("Mola zamanı");
+  await page.getByRole("button", { name: "Duraklat", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "İptal et", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Bitir", exact: true }),
+  ).toBeVisible();
+  const earned: any = await page.evaluate(() =>
     (window as any).odakTestApi.invoke("snapshot"),
   );
-  expect(cancelled.data.tasks[0].status).toBe("active");
-  expect(cancelled.data.sessions).toHaveLength(1);
-  await page.evaluate(() => {
-    Object.assign((window as any).odakFixture.timer, {
-      phase: "break",
-      taskId: "report",
-      startedAt: Date.now(),
-      plannedMin: 15,
-    });
-    (window as any).odakNotify();
-  });
-  await expect(page.getByText("MOLA ZAMANI", { exact: true })).toBeVisible();
+  expect(earned.data.tasks[0].status).toBe("active");
+  expect(earned.data.sessions).toHaveLength(1);
+  await page.getByLabel("Odaklanılacak görev").selectOption("backlog");
+  const selectedNext: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(selectedNext.data).toEqual(earned.data);
   await page.getByRole("button", { name: "Bitir", exact: true }).click();
+  await expect(page.getByRole("alertdialog")).toContainText("Rapor yaz");
   await expect(page.getByRole("alertdialog")).toContainText(
     "mola odak süresine eklenmez",
   );
@@ -1085,7 +1112,9 @@ test("break cancellation leaves the task active while Finish completes it withou
     (window as any).odakTestApi.invoke("snapshot"),
   );
   expect(finished.data.tasks[0].status).toBe("completed");
-  expect(finished.data.sessions).toEqual(cancelled.data.sessions);
+  expect(finished.data.sessions).toEqual(earned.data.sessions);
+  expect(finished.data.tasks[2].status).toBe("active");
+  await expect(page.getByLabel("Odaklanılacak görev")).toHaveValue("backlog");
 });
 
 test("new task requires a nonblank label and typed labels remain available", async ({
@@ -1152,4 +1181,206 @@ test("quick add requires a label and fits the small native window", async ({
   expect(
     state.data.tasks.find((t: any) => t.title === "Hızlı etiketli iş").label,
   ).toBe("Ev");
+});
+
+test("suggests today's highest stars after Finish, then falls back to the general list", async ({
+  page,
+}) => {
+  await page.evaluate(async () => {
+    const api = (window as any).odakTestApi,
+      fixture = (window as any).odakFixture;
+    for (const [id, rating] of [
+      ["report", 5],
+      ["slides", 4],
+      ["backlog", 5],
+    ])
+      await api.invoke("command", {
+        action: "set_priority",
+        payload: { id, rating },
+      });
+    await api.invoke("command", {
+      action: "save_task",
+      payload: { ...fixture.tasks[1], pomodoroMin: 30 },
+    });
+  });
+  const picker = page.getByLabel("Odaklanılacak görev"),
+    suggestion = page.getByLabel("Sıradaki odak önerisi");
+  await expect(picker).toHaveValue("report");
+  await expect(suggestion).toContainText("5 yıldız");
+  await page.getByRole("button", { name: "Odaklanmaya başla" }).click();
+  await page.getByRole("button", { name: "Bitir", exact: true }).click();
+  await page.getByRole("button", { name: "Evet, bitir", exact: true }).click();
+  await expect(picker).toHaveValue("slides");
+  await expect(suggestion).toContainText("4 yıldız");
+  await expect(page.getByLabel("Çalışma süresi", { exact: true })).toHaveValue(
+    "30",
+  );
+  await expect(page.locator(".timer-card .timer-title")).toContainText(
+    "Sunum hazırla",
+  );
+  await expect(picker.locator('option[value="report"]')).toHaveCount(0);
+  await page
+    .locator(".timer-card")
+    .screenshot({ path: "docs/screenshot-focus-suggestion.png" });
+  await page.getByRole("button", { name: "Odaklanmaya başla" }).click();
+  await page.getByRole("button", { name: "Bitir", exact: true }).click();
+  await page.getByRole("button", { name: "Evet, bitir", exact: true }).click();
+  await expect(picker).toHaveValue("backlog");
+  await expect(suggestion).toContainText("5 yıldız");
+  await expect(suggestion).toContainText("Liste");
+});
+
+test("deadline clears the previous selection during break and keeps the next recommendation after break", async ({
+  page,
+}) => {
+  await page.getByLabel("Rapor yaz: başlat").click();
+  await page.evaluate(async () => {
+    const fixture = (window as any).odakFixture,
+      now = Date.now();
+    await (window as any).odakTestApi.invoke("command", {
+      action: "set_priority",
+      payload: { id: "report", rating: 5 },
+    });
+    await (window as any).odakTestApi.invoke("command", {
+      action: "set_priority",
+      payload: { id: "slides", rating: 4 },
+    });
+    fixture.sessions.push({
+      id: "deadline",
+      taskId: "report",
+      type: "work",
+      startedAt: now - 45 * 60000,
+      endedAt: now,
+      plannedMin: 45,
+      actualMin: 45,
+      label: "İş",
+    });
+    Object.assign(fixture.timer, {
+      phase: "break",
+      startedAt: now,
+      plannedMin: 15,
+    });
+    (window as any).odakNotify();
+  });
+  const picker = page.getByLabel("Odaklanılacak görev");
+  await expect(page.locator(".timer-card .timer-title")).toHaveText(
+    "Mola zamanı",
+  );
+  await expect(picker).toHaveValue("slides");
+  await expect(picker).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "İptal et", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .locator(".timer-card")
+    .screenshot({ path: "docs/screenshot-break-suggestion.png" });
+  await page.evaluate(() => {
+    Object.assign((window as any).odakFixture.timer, {
+      phase: "idle",
+      startedAt: null,
+      breakReady: true,
+    });
+    (window as any).odakNotify();
+  });
+  await expect(page.locator(".timer-card .timer-title")).toContainText(
+    "Sunum hazırla",
+  );
+  await expect(picker).toHaveValue("slides");
+  await page.getByRole("button", { name: "Devam et", exact: true }).click();
+  const state: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(state.data.timer.taskId).toBe("slides");
+  expect(state.data.tasks[0].status).toBe("active");
+  expect(state.data.sessions).toHaveLength(1);
+});
+
+test("picker uses only the nearest recurrence and can start a lazy monthly task without modifying other occurrences", async ({
+  page,
+}) => {
+  const dates: any = await page.evaluate(() => {
+    const fixture = (window as any).odakFixture,
+      now = new Date();
+    const key = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const nearest = new Date(now);
+    nearest.setDate(nearest.getDate() + 29);
+    const far = new Date(nearest);
+    far.setMonth(far.getMonth() + 1);
+    const first = new Date(nearest);
+    first.setMonth(first.getMonth() - 1);
+    const template = {
+      ...fixture.tasks[0],
+      id: "monthly",
+      title: "Aylık kontrol",
+      scheduledDate: key(first),
+      recurrenceRule: {
+        frequency: "monthly",
+        weekdays: [],
+        monthDay: nearest.getDate(),
+      },
+    };
+    const later = {
+      ...template,
+      id: `monthly@${key(far)}`,
+      seriesId: "monthly",
+      scheduledDate: key(far),
+      recurrenceRule: null,
+    };
+    const weekly = {
+      ...template,
+      id: "weekly",
+      title: "Aylık kontrol",
+      recurrenceRule: { frequency: "daily", weekdays: [], monthDay: 1 },
+    };
+    fixture.tasks.push(template, later, weekly);
+    (window as any).odakNotify();
+    return { nearest: `monthly@${key(nearest)}`, later: later.id };
+  });
+  const picker = page.getByLabel("Odaklanılacak görev");
+  await expect(picker.locator('option[value^="monthly@"]')).toHaveCount(1);
+  await expect(
+    picker.locator(`option[value="${dates.nearest}"]`),
+  ).toBeAttached();
+  await expect(picker.locator(`option[value="${dates.later}"]`)).toHaveCount(0);
+  await expect(picker.locator('option[value^="weekly@"]')).toHaveCount(1);
+  await expect(picker.locator('option[value^="monthly@"]')).toContainText(
+    /20\d{2}/,
+  );
+  const before: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  await picker.selectOption(dates.nearest);
+  const preview: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(preview.data).toEqual(before.data);
+  await page.getByRole("button", { name: "Odaklanmaya başla" }).click();
+  const started: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(started.data.timer.taskId).toBe(dates.nearest);
+  expect(started.data.tasks.filter((t: any) => t.id !== dates.nearest)).toEqual(
+    before.data.tasks,
+  );
+  expect(
+    started.data.tasks.filter((t: any) => t.id === dates.nearest),
+  ).toHaveLength(1);
+});
+
+test("empty current agenda and list leave focus unselected without starting a taskless timer", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    (window as any).odakFixture.tasks.forEach((task: any) => {
+      task.status = "completed";
+      task.completedAt = Date.now();
+    });
+    (window as any).odakNotify();
+  });
+  await expect(page.getByLabel("Sıradaki odak önerisi")).toHaveCount(0);
+  await expect(page.getByLabel("Odaklanılacak görev")).toHaveValue("");
+  await expect(
+    page.getByRole("button", { name: "Odaklanmaya başla" }),
+  ).toBeDisabled();
 });
