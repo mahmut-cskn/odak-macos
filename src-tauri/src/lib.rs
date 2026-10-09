@@ -270,6 +270,16 @@ fn execute(
                 payload["title"].as_str().ok_or("Görev başlığı gerekli.")?,
             )?;
         }
+        "set_subtask" => set_subtask(
+            &mut next,
+            payload["taskId"].as_str().ok_or("Görev bulunamadı.")?,
+            payload["subtaskId"]
+                .as_str()
+                .ok_or("Alt görev bulunamadı.")?,
+            payload["done"]
+                .as_bool()
+                .ok_or("Alt görev durumu geçersiz.")?,
+        )?,
         "toggle_task" => {
             let id = payload["id"].as_str().ok_or("Görev bulunamadı.")?;
             let t = next

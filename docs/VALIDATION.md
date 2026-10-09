@@ -130,3 +130,17 @@ Yerel doğrulama: 9 Ekim 2026.
 - [Sıradaki iş önerisi](screenshot-focus-suggestion.png) ve [molada öneri](screenshot-break-suggestion.png) izole örneklerle görüntülendi ve görsel olarak kontrol edildi.
 - Kullanıcı verisi doğrudan değiştirilmedi, SQLite şeması dönüştürülmedi ve kurulu Odak kapatılmadı veya yeniden başlatılmadı. Gerçek kullanıcı yerine test verileri ve geçici/bellek veritabanları kullanıldı.
 - Üretim TypeScript/Vite ve universal Tauri build başarılı. `lipo` x86_64 + arm64, Info.plist v1.6.0 gösteriyor; ad-hoc imza ve DMG CRC kontrolleri geçti. Salt okunur bağlanan pakette Applications kısayolu ve Finder yerleşimi var; paket çalıştırılabilirinin SHA-256 değeri derlenen uygulamayla aynı. DMG'ye eşleşen SHA-256 dosyası hazırlandı.
+
+## v1.7.0 — panelde alt görevler ve salt okunur tamamlanan kartları
+
+Yerel doğrulama: 9 Ekim 2026.
+
+- 28 TypeScript, 39 Rust, 34 Chromium UI ve 4 Python testi geçti: toplam 105. `cargo clippy --all-targets --locked -- -D warnings` temiz.
+- Bugün kartının boş alanı ve Liste kartında Enter, görevi/süresini seçiyor; görev, oturum ve sayaç verileri aynı kalıyor. Çalışan veya duraklatılmış çalışma sırasında başka karta basmak mevcut görevi ve süreyi değiştirmiyor. Alt kontroller kendi işlevini koruyor.
+- Pomodoro panelindeki checklist'in işaretlenmesi sadece hedef alt görevin `done` alanını değiştiriyor. Gerçek native domain testleri çalışan ve duraklatılmış sayaçların tüm alanlarını birebir koruyor; bütün alt görevler bitince ana görev aktif kalıyor. Tamamlanan veya eksik görevin checklist değişikliği yazmadan reddediliyor.
+- Tamamlanan görevler en yeni önce gösteriliyor. Kartta etiket, salt okunur yıldızlar, gerçek/planlanan süre, iş tahmini ve oturum sayısı var. Detay açmak hiçbir yazma komutu göndermiyor; not ve checklist okunuyor, düzenlenebilir alan/menü yok. Girilmemiş plan gün/başlangıç/bitiş/son zaman alanları gizleniyor; kayıt varsa gösteriliyor. Önceki tamamlama geri alma yuvarlağı korunuyor; geçmiş takvimde devre dışı.
+- Mola sonrasında 30 dakikalık görevi seçmek paneli 30:00'a, 45 dakikalık diğer görevi seçmek 45:00'a getiriyor; yalnızca seçim yapmak veri değiştirmiyor.
+- Gerçek Rust zamanlayıcı testi 1 saniyelik erken bitirmeyi tek work oturumu ve `actualMin=1/60` olarak kaydediyor. UI'da Toplam oturum 1, odak 1sn görünüyor. Doğrudan görev tiklemek ise oturum/süre eklemiyor.
+- [Panel checklist](screenshot-focus-checklist.png), [koyu checklist](screenshot-focus-checklist-dark.png), [tamamlanan kartları](screenshot-completed-cards.png), [salt okunur detay](screenshot-completed-details.png) ve [koyu detay](screenshot-completed-details-dark.png) izole örneklerle görüntülendi ve kontrol edildi.
+- Görev/oturum/sayaç/ayar şemaları değiştirilmedi, geçmiş dönüştürülmedi ve kullanıcının SQLite dosyasına doğrudan yazılmadı. Kurulu uygulama kapatılmadı, yeniden başlatılmadı veya üzerine kurulmadı.
+- Üretim TypeScript/Vite ve universal Tauri derlemesi başarılı. `lipo` x86_64 + arm64, Info.plist v1.7.0 gösteriyor; `codesign --verify --deep --strict` ve DMG CRC doğrulaması geçti. Salt okunur bağlanan paketin Applications kısayolu, Finder yerleşimi ve derlenen uygulamayla eşleşen çalıştırılabilir SHA-256 değeri kontrol edildi; DMG SHA-256 dosyası hazırlandı.

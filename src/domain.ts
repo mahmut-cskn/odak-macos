@@ -93,10 +93,27 @@ export function shiftDay(value: string, offset: number) {
   return dayKey(d);
 }
 export const formatMinutes = (minutes: number) => {
+  if (minutes > 0 && minutes < 1) {
+    const seconds = Math.round(minutes * 60);
+    return seconds ? `${seconds}sn` : "<1sn";
+  }
   const m = Math.round(minutes);
   return m >= 60
     ? `${Math.floor(m / 60)}sa${m % 60 ? ` ${m % 60}dk` : ""}`
     : `${m}dk`;
+};
+export const formatElapsed = (minutes: number) => {
+  const seconds = Math.max(0, Math.round(minutes * 60));
+  const hours = Math.floor(seconds / 3600),
+    mins = Math.floor((seconds % 3600) / 60),
+    secs = seconds % 60;
+  return [
+    hours ? `${hours}sa` : "",
+    mins ? `${mins}dk` : "",
+    secs || !seconds ? `${secs}sn` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 };
 export const clock = (ms: number) => {
   const s = Math.ceil(ms / 1000);
@@ -118,6 +135,16 @@ export const spent = (taskId: string, sessions: Session[]) =>
   sessions
     .filter((s) => s.type === "work" && s.taskId === taskId)
     .reduce((sum, s) => sum + s.actualMin, 0);
+export function taskWorkSummary(taskId: string, sessions: Session[]) {
+  const work = sessions
+    .filter((session) => session.type === "work" && session.taskId === taskId)
+    .sort((a, b) => b.endedAt - a.endedAt);
+  return {
+    work,
+    totalMin: work.reduce((total, session) => total + session.actualMin, 0),
+    last: work[0],
+  };
+}
 export function newTask(date: string | null = null): Task {
   return {
     id: newId(),
@@ -160,11 +187,13 @@ export function stats(sessions: Session[], today = dayKey()) {
   monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
   const weekStart = dayKey(monday);
   let daily = 0,
-    weekly = 0;
+    weekly = 0,
+    sessionCount = 0;
   const labels: Record<string, number> = {};
   const days: Record<string, number> = {};
   for (const s of sessions) {
     if (s.type !== "work") continue;
+    sessionCount++;
     const day = dayKey(new Date(s.endedAt));
     if (day === today) daily += s.actualMin;
     if (day >= weekStart && day <= today) {
@@ -174,7 +203,7 @@ export function stats(sessions: Session[], today = dayKey()) {
       days[day] = (days[day] || 0) + s.actualMin;
     }
   }
-  return { daily, weekly, labels, days, weekStart };
+  return { daily, weekly, labels, days, weekStart, sessionCount };
 }
 export function validateTask(t: Task, requireLabel = false) {
   if (!t.title.trim()) return "Bir görev başlığı yaz.";

@@ -8,6 +8,7 @@
   --text: #293b34;
   --muted: #839087;
   --line: #e7ebe4;
+  --card-line: #ccd8c8;
   --green: #356c55;
   --soft: #edf2e9;
   --timer: #eaf0df;
@@ -408,12 +409,216 @@ main {
   padding: 5px;
 }
 .task-list {
-  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
 }
 .task-row {
-  padding: 16px 3px;
-  border-bottom: 1px solid var(--line);
+  padding: 16px;
+  border: 1px solid var(--card-line);
+  border-radius: 13px;
+  background: var(--surface);
   position: relative;
+  transition:
+    border-color 0.16s,
+    background 0.16s;
+}
+.task-row.selectable,
+.completed-card {
+  cursor: pointer;
+}
+.task-row.selectable:hover,
+.completed-card:hover {
+  border-color: var(--green);
+}
+.task-row.selected-task {
+  border-color: var(--green);
+  box-shadow: inset 3px 0 var(--green);
+}
+.task-row:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 3px;
+}
+.focus-checklist {
+  margin-top: 12px;
+  border-top: 1px solid var(--card-line);
+  padding-top: 10px;
+}
+.focus-checklist summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--green);
+  cursor: pointer;
+  list-style: none;
+}
+.focus-checklist summary::-webkit-details-marker {
+  display: none;
+}
+.focus-checklist summary > svg:last-child {
+  margin-left: auto;
+  transition: transform 0.16s;
+}
+.focus-checklist[open] summary > svg:last-child {
+  transform: rotate(90deg);
+}
+.checklist-count {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+}
+.focus-checklist-items {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 16px;
+  padding-top: 9px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.focus-checklist-items label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+  min-width: 0;
+  border-radius: 7px;
+  padding: 3px 4px;
+}
+.focus-checklist-items label:hover {
+  background: var(--soft);
+}
+.focus-checklist-items label span {
+  overflow-wrap: anywhere;
+}
+.focus-checklist-items input {
+  flex-shrink: 0;
+  margin: 0;
+}
+.focus-checklist-items .done {
+  color: var(--muted);
+}
+.focus-checklist small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 8px;
+}
+.task-row.completed-card .task-title {
+  text-decoration: none;
+  color: var(--text);
+  font-weight: 600;
+}
+.completed-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  margin: 13px 0 0 32px;
+}
+.completed-summary > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.completed-summary small {
+  color: var(--muted);
+  font-size: 10px;
+}
+.completed-summary strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.completion-note {
+  margin: 10px 0 0 32px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.completed-detail-button {
+  color: var(--green);
+  padding: 5px;
+}
+.completion-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 15px 20px;
+  padding: 18px 0;
+  margin: 0;
+}
+.completion-facts dt {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+.completion-facts dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+.completion-section {
+  border-top: 1px solid var(--line);
+  padding: 8px 0;
+}
+.completion-section h3 {
+  color: var(--green);
+  margin: 10px 0;
+  font-size: 12px;
+}
+.completion-notes {
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.readonly-checklist {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.readonly-checklist li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.readonly-checklist .checked,
+.readonly-checklist .unchecked {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--card-line);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.readonly-checklist .checked {
+  background: var(--green);
+  border-color: var(--green);
+  color: white;
+}
+.completion-session {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  padding: 9px 0;
+  font-size: 11px;
+}
+.completion-session small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.completion-session > span,
+.completion-session strong span {
+  color: var(--muted);
+  font-weight: 400;
 }
 .task-main {
   display: flex;
@@ -1057,6 +1262,7 @@ kbd {
     --text: #dbe4d7;
     --muted: #89988b;
     --line: #324035;
+    --card-line: #42594b;
     --green: #659774;
     --soft: #29362b;
     --timer: #293924;
@@ -1457,8 +1663,11 @@ span.task-circle {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 3px;
-  border-bottom: 1px solid var(--line);
+  border: 1px solid var(--card-line);
+  border-radius: 13px;
+  background: var(--surface);
+  padding: 14px 16px;
+  margin: 9px 0;
 }
 .series-row > div:first-child {
   min-width: 0;

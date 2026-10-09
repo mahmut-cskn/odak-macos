@@ -137,6 +137,16 @@ async function setup(page: Page) {
           case "rename_task":
             data.tasks.find((t: any) => t.id === p.id).title = p.title.trim();
             break;
+          case "set_subtask": {
+            const task = data.tasks.find(
+              (task: any) => task.id === p.taskId && task.status === "active",
+            );
+            if (!task) throw new Error("Aktif görev bulunamadı.");
+            task.subtasks.find(
+              (subtask: any) => subtask.id === p.subtaskId,
+            ).done = p.done;
+            break;
+          }
           case "save_label":
             hidden.delete(p.name);
             catalog.push(p);
@@ -623,7 +633,16 @@ test("past calendar is read-only and never requests historical materialization",
   ).toHaveCount(0);
   await expect(page.getByLabel("Eski rapor: geri al")).toHaveCount(0);
   await expect(page.getByLabel("Eski rapor: seçenekler")).toHaveCount(0);
-  await expect(page.getByLabel("Geçmiş adım", { exact: true })).toBeDisabled();
+  await page
+    .getByLabel("Eski rapor: tamamlanan detayları", { exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Tamamlanan görev detayları" }),
+  ).toContainText("Geçmiş adım");
+  await expect(
+    page.getByRole("dialog").locator("input, textarea, select"),
+  ).toHaveCount(0);
+  await page.getByLabel("Detayları kapat").click();
   await page.screenshot({
     path: "docs/screenshot-history.png",
     fullPage: true,
@@ -1383,4 +1402,320 @@ test("empty current agenda and list leave focus unselected without starting a ta
   await expect(
     page.getByRole("button", { name: "Odaklanmaya başla" }),
   ).toBeDisabled();
+});
+
+test("task card empty space and keyboard select its duration without starting or changing a live timer", async ({
+  page,
+}) => {
+  await page.evaluate(async () => {
+    const fixture = (window as any).odakFixture;
+    await (window as any).odakTestApi.invoke("command", {
+      action: "save_task",
+      payload: { ...fixture.tasks[1], pomodoroMin: 30 },
+    });
+  });
+  const before: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  const card = page.getByLabel("Sunum hazırla: görev kartı", { exact: true }),
+    box = await card.boundingBox();
+  await card.click({ position: { x: box!.width / 2, y: box!.height - 7 } });
+  await expect(page.getByLabel("Odaklanılacak görev")).toHaveValue("slides");
+  await expect(page.locator(".timer-number")).toHaveText("30:00");
+  const selected: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(selected.data).toEqual(before.data);
+  await page
+    .getByRole("button", { name: "Liste", exact: false })
+    .first()
+    .click();
+  const backlog = page.getByLabel("Kitap oku: görev kartı", { exact: true });
+  await backlog.focus();
+  await backlog.press("Enter");
+  await expect(page.getByLabel("Odaklanılacak görev")).toHaveValue("backlog");
+  await expect(page.locator(".timer-number")).toHaveText("45:00");
+  await page.evaluate(() => {
+    (window as any).odakFixture.tasks[2].dueAt =
+      Date.now() - 2 * 24 * 60 * 60000;
+    (window as any).odakNotify();
+  });
+  const past: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  await backlog.focus();
+  await backlog.press("Enter");
+  await expect(page.getByRole("status")).toContainText(
+    "Geçmiş günün görevi seçilemez",
+  );
+  const blocked: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(blocked.data).toEqual(past.data);
+  await page.getByRole("button", { name: "Bugün", exact: true }).click();
+  await page.getByLabel("Rapor yaz: başlat").click();
+  await page.getByRole("button", { name: "Duraklat", exact: true }).click();
+  const running: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  await card.focus();
+  await card.press("Enter");
+  await expect(page.getByRole("status")).toContainText(
+    "Çalışan oturumun görevi değiştirilemez",
+  );
+  await expect(page.getByLabel("Odaklanılacak görev")).toHaveValue("report");
+  const unchanged: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(unchanged.data).toEqual(running.data);
+});
+
+test("focus checklist ticks only its selected task and preserves work and pause timestamps", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    const task = (window as any).odakFixture.tasks[0];
+    task.subtasks = [
+      { id: "draft", title: "Taslağı hazırla", done: false },
+      { id: "sources", title: "Kaynakları ekle", done: false },
+      { id: "check", title: "Son kontrol", done: false },
+    ];
+    (window as any).odakNotify();
+  });
+  await page.getByLabel("Rapor yaz: başlat").click();
+  const before: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  await page.getByLabel("Pomodoro: Taslağı hazırla", { exact: true }).check();
+  const checked: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  const expected = structuredClone(before.data);
+  expected.tasks[0].subtasks[0].done = true;
+  expect(checked.data).toEqual(expected);
+  await page.getByRole("button", { name: "Duraklat", exact: true }).click();
+  const paused: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  await page.getByLabel("Pomodoro: Kaynakları ekle", { exact: true }).check();
+  await page.getByLabel("Pomodoro: Son kontrol", { exact: true }).check();
+  const allDone: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(allDone.data.timer).toEqual(paused.data.timer);
+  expect(allDone.data.sessions).toEqual(paused.data.sessions);
+  expect(allDone.data.tasks[0].status).toBe("active");
+  await expect(page.locator(".focus-checklist")).toContainText("3/3");
+  await page
+    .locator(".timer-card")
+    .screenshot({ path: "docs/screenshot-focus-checklist.png" });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.locator(".timer-card").screenshot({
+    path: "docs/screenshot-focus-checklist-dark.png",
+    animations: "disabled",
+  });
+  const calls: any[] = await page.evaluate(() => (window as any).odakCalls);
+  expect(
+    calls.filter((call) => call.args?.action === "set_subtask"),
+  ).toHaveLength(3);
+});
+
+test("completed cards show actual versus planned work and open strictly read-only optional details", async ({
+  page,
+}) => {
+  await page.evaluate(async () => {
+    const fixture = (window as any).odakFixture,
+      now = Date.now();
+    Object.assign(fixture.tasks[0], {
+      status: "completed",
+      completedAt: now,
+      scheduledDate: null,
+      notes: "Teslim edilen raporun özeti.",
+      estimateMin: 60,
+      subtasks: [{ id: "done", title: "Kaynaklar kontrol edildi", done: true }],
+    });
+    Object.assign(fixture.tasks[1], {
+      status: "completed",
+      completedAt: now - 10000,
+    });
+    fixture.sessions.push({
+      id: "partial",
+      taskId: "report",
+      type: "work",
+      startedAt: now - 30 * 60000,
+      endedAt: now,
+      plannedMin: 60,
+      actualMin: 30,
+      label: "İş",
+    });
+    await (window as any).odakTestApi.invoke("command", {
+      action: "set_priority",
+      payload: { id: "report", rating: 5 },
+    });
+  });
+  await page.getByRole("button", { name: "Tamamlanan", exact: true }).click();
+  await expect(page.locator(".completed-card").first()).toHaveAttribute(
+    "aria-label",
+    "Rapor yaz: tamamlanan görev",
+  );
+  const card = page.getByLabel("Rapor yaz: tamamlanan görev", { exact: true });
+  await expect(card).toContainText("30dk / 1sa · Erken bitirildi");
+  await expect(card.locator(".label-tag")).toHaveText("İş");
+  await expect(card.locator(".task-title")).toHaveCSS(
+    "text-decoration-line",
+    "none",
+  );
+  await expect(card.getByLabel("5 yıldız öncelik")).toBeVisible();
+  await expect(page.getByLabel("Rapor yaz: seçenekler")).toHaveCount(0);
+  await page.screenshot({
+    path: "docs/screenshot-completed-cards.png",
+    fullPage: true,
+  });
+  const before: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  const callCount = await page.evaluate(() => (window as any).odakCalls.length);
+  await page
+    .getByLabel("Rapor yaz: tamamlanan detayları", { exact: true })
+    .click();
+  const detail = page.getByRole("dialog", {
+    name: "Tamamlanan görev detayları",
+  });
+  await expect(detail).toContainText("Teslim edilen raporun özeti.");
+  await expect(detail).toContainText("Kaynaklar kontrol edildi");
+  await expect(detail).toContainText("30dk");
+  await expect(
+    detail.locator("input, select, textarea, [contenteditable=true]"),
+  ).toHaveCount(0);
+  await expect(detail.getByRole("button")).toHaveCount(1);
+  for (const field of [
+    "Plan günü",
+    "Plan başlangıcı",
+    "Plan bitişi",
+    "Son bitirme zamanı",
+  ])
+    await expect(detail.getByText(field, { exact: true })).toHaveCount(0);
+  await page.screenshot({
+    path: "docs/screenshot-completed-details.png",
+    fullPage: true,
+  });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.screenshot({
+    path: "docs/screenshot-completed-details-dark.png",
+    fullPage: true,
+    animations: "disabled",
+  });
+  await page.keyboard.press("Escape");
+  await expect(detail).toHaveCount(0);
+  const calls: any[] = await page.evaluate(() => (window as any).odakCalls);
+  expect(
+    calls.slice(callCount).filter((call) => call.cmd === "command"),
+  ).toHaveLength(0);
+  const after: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(after.data).toEqual(before.data);
+  await page.evaluate(() => {
+    const task = (window as any).odakFixture.tasks[0],
+      now = new Date();
+    task.scheduledDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    task.startAt = now.getTime();
+    task.endAt = task.startAt + 60000;
+    task.dueAt = task.endAt + 60000;
+    (window as any).odakNotify();
+  });
+  await page.getByLabel("Rapor yaz: detayları göster", { exact: true }).click();
+  for (const field of [
+    "Plan günü",
+    "Plan başlangıcı",
+    "Plan bitişi",
+    "Son bitirme zamanı",
+  ])
+    await expect(detail.getByText(field, { exact: true })).toBeVisible();
+});
+
+test("selection after break loads the next task duration instead of keeping zero", async ({
+  page,
+}) => {
+  await page.evaluate(async () => {
+    const fixture = (window as any).odakFixture,
+      now = Date.now();
+    await (window as any).odakTestApi.invoke("command", {
+      action: "save_task",
+      payload: { ...fixture.tasks[1], pomodoroMin: 30 },
+    });
+    Object.assign(fixture.timer, {
+      phase: "idle",
+      breakReady: true,
+      taskId: "report",
+      startedAt: null,
+    });
+    fixture.sessions.push({
+      id: "last-work",
+      taskId: "report",
+      type: "work",
+      startedAt: now - 45 * 60000,
+      endedAt: now,
+      plannedMin: 45,
+      actualMin: 45,
+      label: "İş",
+    });
+    (window as any).odakNotify();
+  });
+  await expect(page.getByText("MOLA BİTTİ", { exact: true })).toBeVisible();
+  await page.getByLabel("Odaklanılacak görev").selectOption("slides");
+  await expect(page.locator(".timer-number")).toHaveText("30:00");
+  await expect(page.getByLabel("Çalışma süresi", { exact: true })).toHaveValue(
+    "30",
+  );
+  const before: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  await page.getByLabel("Odaklanılacak görev").selectOption("backlog");
+  await expect(page.locator(".timer-number")).toHaveText("45:00");
+  const after: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(after.data).toEqual(before.data);
+});
+
+test("manual tick adds no time but a one-second Finish counts one session and shows seconds", async ({
+  page,
+}) => {
+  await page.getByLabel("Rapor yaz: tamamla").click();
+  await page.getByLabel("İstatistik", { exact: true }).click();
+  await expect(
+    page.locator(".stat-cards > div").nth(2).locator("strong"),
+  ).toHaveText("0");
+  await page.getByRole("button", { name: "Tamamlanan", exact: true }).click();
+  await expect(
+    page.getByLabel("Rapor yaz: tamamlanan görev", { exact: true }),
+  ).toContainText("Odak kaydı yok");
+  await page.getByLabel("Rapor yaz: geri al").click();
+  await page.getByRole("button", { name: "Bugün", exact: true }).click();
+  await page.getByLabel("Rapor yaz: başlat").click();
+  await page.evaluate(() => {
+    const now = Date.now();
+    Object.assign((window as any).odakFixture.timer, {
+      phase: "paused",
+      pausedPhase: "work",
+      startedAt: now - 1000,
+      pausedAt: now,
+      pausedAccumulatedMs: 0,
+    });
+    (window as any).odakNotify();
+  });
+  await page.getByRole("button", { name: "Bitir", exact: true }).click();
+  await page.getByRole("button", { name: "Evet, bitir", exact: true }).click();
+  await page.getByLabel("İstatistik", { exact: true }).click();
+  await expect(
+    page.locator(".stat-cards > div").nth(2).locator("strong"),
+  ).toHaveText("1");
+  await expect(
+    page.locator(".stat-cards > div").first().locator("strong"),
+  ).toHaveText("1sn");
+  await page.getByRole("button", { name: "Tamamlanan", exact: true }).click();
+  await expect(
+    page.getByLabel("Rapor yaz: tamamlanan görev", { exact: true }),
+  ).toContainText("Son oturum: 1sn / 45dk");
 });

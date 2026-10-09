@@ -48,6 +48,8 @@ import {
   clock,
   dayKey,
   formatMinutes,
+  formatElapsed,
+  taskWorkSummary,
   localInput,
   newTask,
   parseDay,
@@ -105,6 +107,7 @@ export default function App() {
   const [quickLabel, setQuickLabel] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [prioritySort, setPrioritySort] = useState(false);
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   const requestDelete: ConfirmRequest = (
     title,
     message,
@@ -228,7 +231,12 @@ export default function App() {
     }
   }, [!!snapshot, quick]);
   useEffect(() => {
-    if (!quick && snapshot && !(tab === "calendar" && day < dayKey()))
+    if (
+      !quick &&
+      snapshot &&
+      (tab === "today" || tab === "list" || tab === "calendar") &&
+      !(tab === "calendar" && day < dayKey())
+    )
       run("ensure_day", { date: tab === "calendar" ? day : dayKey() });
   }, [tab, day, !!snapshot, quick]);
   useEffect(() => {
@@ -382,6 +390,8 @@ export default function App() {
           ),
         ]
       : focusTasks;
+  const checklistTask = working ? activeTask : selectedFocusTask;
+  const detailTask = data.tasks.find((task) => task.id === detailTaskId);
   let tasks =
     tab === "today"
       ? tasksForDay(data.tasks, dayKey()).filter((t) => t.status === "active")
@@ -551,7 +561,7 @@ export default function App() {
                     <div className="timer-number" aria-live="off">
                       {active
                         ? clock(remaining)
-                        : timer.breakReady
+                        : timer.breakReady && !selectedFocusTask
                           ? "00:00"
                           : clock(work * 60000)}
                     </div>
@@ -680,6 +690,27 @@ export default function App() {
                     ))}
                   </select>
                 </div>
+                {checklistTask && checklistTask.subtasks.length > 0 && (
+                  <FocusChecklist
+                    task={checklistTask}
+                    upcoming={resting}
+                    disabled={
+                      busy ||
+                      checklistTask.status === "completed" ||
+                      !data.tasks.some((task) => task.id === checklistTask.id)
+                    }
+                    preview={
+                      !data.tasks.some((task) => task.id === checklistTask.id)
+                    }
+                    onChange={(id, done) =>
+                      run("set_subtask", {
+                        taskId: checklistTask.id,
+                        subtaskId: id,
+                        done,
+                      })
+                    }
+                  />
+                )}
                 {!working && suggestion && (
                   <div
                     className="focus-suggestion"
@@ -929,32 +960,81 @@ export default function App() {
                 </div>
               </div>
               <div className="task-list">
-                {tasks.map((task) => (
-                  <TaskRow
-                    key={task.id}
-                    task={task}
-                    sessions={data.sessions}
-                    readOnly={calendarReadOnly}
-                    priority={priorityFor(task, priorities)}
-                    onPriority={(rating) =>
-                      run("set_priority", { id: task.id, rating })
-                    }
-                    canStart={!active && !isPastTask(task)}
-                    busy={busy}
-                    onToggle={() => run("toggle_task", { id: task.id })}
-                    onEdit={() => setEditor(cloneTask(task))}
-                    onStart={() => start(task.id)}
-                    onMove={(date) => move(task, date)}
-                    onSubtask={(id, done) =>
-                      run("save_task", {
-                        ...task,
-                        subtasks: task.subtasks.map((s) =>
-                          s.id === id ? { ...s, done } : s,
-                        ),
-                      })
-                    }
-                  />
-                ))}
+                {tasks.map((task) =>
+                  task.status === "completed" ? (
+                    <CompletedTaskCard
+                      key={task.id}
+                      task={task}
+                      sessions={data.sessions}
+                      priority={priorityFor(task, priorities)}
+                      pomodoroMin={taskPomodoroMin(
+                        task,
+                        taskDurations,
+                        data.settings.defaultWorkMin,
+                      )}
+                      busy={busy}
+                      onDetail={() => setDetailTaskId(task.id)}
+                      onRestore={
+                        calendarReadOnly
+                          ? undefined
+                          : () => run("toggle_task", { id: task.id })
+                      }
+                    />
+                  ) : (
+                    <TaskRow
+                      key={task.id}
+                      task={task}
+                      sessions={data.sessions}
+                      readOnly={calendarReadOnly}
+                      priority={priorityFor(task, priorities)}
+                      onPriority={(rating) =>
+                        run("set_priority", { id: task.id, rating })
+                      }
+                      canStart={!active && !isPastTask(task)}
+                      busy={busy}
+                      selected={
+                        selectedFocusTask?.id === task.id ||
+                        (working && activeTask?.id === task.id)
+                      }
+                      onSelect={
+                        tab === "today" || tab === "list"
+                          ? () => {
+                              if (working) {
+                                setNotice(
+                                  "Çalışan oturumun görevi değiştirilemez. Yeni görevi oturum bitince seçebilirsin.",
+                                );
+                                return;
+                              }
+                              if (isPastTask(task)) {
+                                setNotice(
+                                  "Geçmiş günün görevi seçilemez. Önce bugüne veya ileri bir güne taşı.",
+                                );
+                                return;
+                              }
+                              setFocusTaskId(task.id);
+                              document
+                                .querySelector(".timer-card")
+                                ?.scrollIntoView({
+                                  behavior: "smooth",
+                                  block: "start",
+                                });
+                            }
+                          : undefined
+                      }
+                      onToggle={() => run("toggle_task", { id: task.id })}
+                      onEdit={() => setEditor(cloneTask(task))}
+                      onStart={() => start(task.id)}
+                      onMove={(date) => move(task, date)}
+                      onSubtask={(id, done) =>
+                        run("set_subtask", {
+                          taskId: task.id,
+                          subtaskId: id,
+                          done,
+                        })
+                      }
+                    />
+                  ),
+                )}
                 {!tasks.length && (
                   <div className="empty-state">
                     <span>
@@ -1063,9 +1143,7 @@ export default function App() {
               </div>
               <div>
                 <small>Toplam oturum</small>
-                <strong>
-                  {data.sessions.filter((s) => s.type === "work").length}
-                </strong>
+                <strong>{summary.sessionCount}</strong>
               </div>
             </div>
             <h3>Bu haftanın ritmi</h3>
@@ -1261,6 +1339,19 @@ export default function App() {
           busy={busy}
         />
       )}
+      {detailTask && (
+        <CompletedTaskDetails
+          task={detailTask}
+          sessions={data.sessions}
+          priority={priorityFor(detailTask, priorities)}
+          pomodoroMin={taskPomodoroMin(
+            detailTask,
+            taskDurations,
+            data.settings.defaultWorkMin,
+          )}
+          onClose={() => setDetailTaskId(null)}
+        />
+      )}
       {confirmation && (
         <ConfirmDialog
           title={confirmation.title}
@@ -1278,6 +1369,367 @@ export default function App() {
   );
 }
 
+function FocusChecklist({
+  task,
+  upcoming,
+  disabled,
+  preview,
+  onChange,
+}: {
+  task: Task;
+  upcoming: boolean;
+  disabled: boolean;
+  preview: boolean;
+  onChange: (id: string, done: boolean) => void;
+}) {
+  const done = task.subtasks.filter((subtask) => subtask.done).length;
+  return (
+    <details className="focus-checklist" open={task.subtasks.length <= 4}>
+      <summary>
+        <Check size={13} />
+        <span>
+          {upcoming ? "Sıradaki görevin alt görevleri" : "Alt görevler"}
+        </span>
+        <span className="checklist-count">
+          {done}/{task.subtasks.length}
+        </span>
+        <ChevronRight size={13} />
+      </summary>
+      <div className="focus-checklist-items">
+        {task.subtasks.map((subtask) => (
+          <label key={subtask.id} className={subtask.done ? "done" : ""}>
+            <input
+              aria-label={`Pomodoro: ${subtask.title}`}
+              type="checkbox"
+              checked={subtask.done}
+              disabled={disabled}
+              onChange={(event) => onChange(subtask.id, event.target.checked)}
+            />
+            <span>{subtask.title}</span>
+          </label>
+        ))}
+      </div>
+      {preview && <small>İşaretlemek için bu görevin oturumunu başlat.</small>}
+      {done === task.subtasks.length && !preview && (
+        <small>
+          Alt görevler hazır. İş bittiyse ana görevi de tamamlayabilirsin.
+        </small>
+      )}
+    </details>
+  );
+}
+
+function CompletedTaskCard({
+  task,
+  sessions,
+  priority,
+  pomodoroMin,
+  busy,
+  onDetail,
+  onRestore,
+}: {
+  task: Task;
+  sessions: Session[];
+  priority: number;
+  pomodoroMin: number;
+  busy: boolean;
+  onDetail: () => void;
+  onRestore?: () => void;
+}) {
+  const { work, totalMin, last } = taskWorkSummary(task.id, sessions);
+  return (
+    <article
+      className="task-row completed completed-card"
+      aria-label={`${task.title}: tamamlanan görev`}
+      tabIndex={0}
+      onClick={(event) => {
+        if (!(event.target as Element).closest("button")) onDetail();
+      }}
+      onKeyDown={(event) => {
+        if (
+          event.target === event.currentTarget &&
+          (event.key === "Enter" || event.key === " ")
+        ) {
+          event.preventDefault();
+          onDetail();
+        }
+      }}
+    >
+      <div className="task-main">
+        {onRestore ? (
+          <button
+            className="task-circle"
+            aria-label={`${task.title}: geri al`}
+            title="Tamamlamayı geri al"
+            disabled={busy}
+            onClick={onRestore}
+          >
+            <Check size={13} />
+          </button>
+        ) : (
+          <span className="task-circle" aria-label="Tamamlandı">
+            <Check size={13} />
+          </span>
+        )}
+        <div className="task-content">
+          <button
+            className="task-title"
+            aria-label={`${task.title}: tamamlanan detayları`}
+            onClick={onDetail}
+          >
+            {task.title}
+          </button>
+          <div className="task-meta">
+            {task.label && (
+              <span className="label-tag" style={{ color: task.color }}>
+                <i style={{ background: task.color }} />
+                {task.label}
+              </span>
+            )}
+            <PriorityStars
+              title={task.title}
+              value={priority}
+              readOnly
+              disabled
+              onChange={() => {}}
+            />
+            {task.completedAt !== null && (
+              <span>
+                {new Date(task.completedAt).toLocaleString("tr-TR", {
+                  day: "numeric",
+                  month: "short",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </span>
+            )}
+          </div>
+        </div>
+        <button
+          className="completed-detail-button"
+          aria-label={`${task.title}: detayları göster`}
+          onClick={onDetail}
+        >
+          <ChevronRight size={17} />
+        </button>
+      </div>
+      <div className="completed-summary">
+        <span>
+          <small>Toplam odak</small>
+          <strong>{formatElapsed(totalMin)}</strong>
+        </span>
+        <span>
+          <small>Pomodoro</small>
+          <strong>{formatMinutes(last?.plannedMin ?? pomodoroMin)}</strong>
+        </span>
+        {task.estimateMin && (
+          <span>
+            <small>İş tahmini</small>
+            <strong>~{formatMinutes(task.estimateMin)}</strong>
+          </span>
+        )}
+        <span>
+          <small>Oturum</small>
+          <strong>{work.length}</strong>
+        </span>
+      </div>
+      <div className="completion-note">
+        {last ? (
+          <>
+            Son oturum: {formatElapsed(last.actualMin)} /{" "}
+            {formatMinutes(last.plannedMin)}
+            {last.actualMin < last.plannedMin
+              ? " · Erken bitirildi"
+              : " · Süresi doldu"}
+          </>
+        ) : (
+          "Odak kaydı yok · Tamamlama süre eklemez"
+        )}
+      </div>
+    </article>
+  );
+}
+
+function CompletedTaskDetails({
+  task,
+  sessions,
+  priority,
+  pomodoroMin,
+  onClose,
+}: {
+  task: Task;
+  sessions: Session[];
+  priority: number;
+  pomodoroMin: number;
+  onClose: () => void;
+}) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    const handle = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+      if (event.key === "Tab") {
+        event.preventDefault();
+        closeRef.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", handle);
+    return () => {
+      document.removeEventListener("keydown", handle);
+      previous?.focus();
+    };
+  }, [onClose]);
+  const { work, totalMin, last } = taskWorkSummary(task.id, sessions);
+  const stamp = (value: number) =>
+    new Date(value).toLocaleString("tr-TR", {
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  return (
+    <div
+      className="modal-overlay"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        className="modal completed-details"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Tamamlanan görev detayları"
+      >
+        <div className="modal-heading">
+          <div>
+            <span className="read-only-badge">
+              <LockKeyhole size={12} />
+              Salt okunur
+            </span>
+            <h2>{task.title}</h2>
+          </div>
+          <button ref={closeRef} aria-label="Detayları kapat" onClick={onClose}>
+            <X size={19} />
+          </button>
+        </div>
+        <div className="task-meta">
+          {task.label && (
+            <span className="label-tag" style={{ color: task.color }}>
+              <i style={{ background: task.color }} />
+              {task.label}
+            </span>
+          )}
+          <PriorityStars
+            title={task.title}
+            value={priority}
+            readOnly
+            disabled
+            onChange={() => {}}
+          />
+        </div>
+        <dl className="completion-facts">
+          <div>
+            <dt>Toplam odak</dt>
+            <dd>{formatElapsed(totalMin)}</dd>
+          </div>
+          <div>
+            <dt>Pomodoro süresi</dt>
+            <dd>{formatMinutes(last?.plannedMin ?? pomodoroMin)}</dd>
+          </div>
+          <div>
+            <dt>Çalışma oturumu</dt>
+            <dd>{work.length}</dd>
+          </div>
+          {task.estimateMin && (
+            <div>
+              <dt>Toplam iş tahmini</dt>
+              <dd>{formatMinutes(task.estimateMin)}</dd>
+            </div>
+          )}
+          {task.completedAt !== null && (
+            <div>
+              <dt>Tamamlandı</dt>
+              <dd>{stamp(task.completedAt)}</dd>
+            </div>
+          )}
+          {task.scheduledDate && (
+            <div>
+              <dt>Plan günü</dt>
+              <dd>{fullDate(task.scheduledDate)}</dd>
+            </div>
+          )}
+          {task.startAt !== null && (
+            <div>
+              <dt>Plan başlangıcı</dt>
+              <dd>{stamp(task.startAt)}</dd>
+            </div>
+          )}
+          {task.endAt !== null && (
+            <div>
+              <dt>Plan bitişi</dt>
+              <dd>{stamp(task.endAt)}</dd>
+            </div>
+          )}
+          {task.dueAt !== null && (
+            <div>
+              <dt>Son bitirme zamanı</dt>
+              <dd>{stamp(task.dueAt)}</dd>
+            </div>
+          )}
+        </dl>
+        {task.notes && (
+          <section className="completion-section">
+            <h3>Not</h3>
+            <p className="completion-notes">{task.notes}</p>
+          </section>
+        )}
+        {task.subtasks.length > 0 && (
+          <section className="completion-section">
+            <h3>Alt görevler</h3>
+            <ul className="readonly-checklist">
+              {task.subtasks.map((subtask) => (
+                <li key={subtask.id}>
+                  <span className={subtask.done ? "checked" : "unchecked"}>
+                    {subtask.done ? <Check size={12} /> : null}
+                  </span>
+                  <span>{subtask.title}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        <section className="completion-section">
+          <h3>Odak geçmişi</h3>
+          {work.length ? (
+            work.map((session) => (
+              <div className="completion-session" key={session.id}>
+                <div>
+                  <strong>
+                    {formatElapsed(session.actualMin)}{" "}
+                    <span>/ {formatMinutes(session.plannedMin)} plan</span>
+                  </strong>
+                  <small>{stamp(session.endedAt)}</small>
+                </div>
+                <span>
+                  {session.actualMin < session.plannedMin
+                    ? "Erken bitirildi"
+                    : "Süresi doldu"}
+                </span>
+              </div>
+            ))
+          ) : (
+            <p className="muted">
+              Bu görevde kaydedilmiş odak oturumu yok. Tiklemek süre eklemez.
+            </p>
+          )}
+        </section>
+      </section>
+    </div>
+  );
+}
+
 function TaskRow({
   readOnly,
   priority,
@@ -1291,6 +1743,8 @@ function TaskRow({
   onStart,
   onMove,
   onSubtask,
+  onSelect,
+  selected,
 }: {
   readOnly: boolean;
   priority: number;
@@ -1304,6 +1758,8 @@ function TaskRow({
   onStart: () => void;
   onMove: (date: string | null) => void;
   onSubtask: (id: string, done: boolean) => void;
+  onSelect?: () => void;
+  selected: boolean;
 }) {
   const [menu, setMenu] = useState(false);
   const completed = task.status === "completed";
@@ -1311,7 +1767,28 @@ function TaskRow({
   const allDone =
     task.subtasks.length > 0 && task.subtasks.every((s) => s.done);
   return (
-    <article className={`task-row ${completed ? "completed" : ""}`}>
+    <article
+      className={`task-row ${completed ? "completed" : ""} ${onSelect ? "selectable" : ""} ${selected ? "selected-task" : ""}`}
+      aria-label={`${task.title}: görev kartı`}
+      tabIndex={onSelect ? 0 : undefined}
+      onClick={(event) => {
+        if (
+          !(event.target as Element).closest(
+            "button, input, select, textarea, label, .task-menu",
+          )
+        )
+          onSelect?.();
+      }}
+      onKeyDown={(event) => {
+        if (
+          event.target === event.currentTarget &&
+          (event.key === "Enter" || event.key === " ")
+        ) {
+          event.preventDefault();
+          onSelect?.();
+        }
+      }}
+    >
       <div className="task-main">
         {readOnly ? (
           <span
@@ -1469,7 +1946,7 @@ function TaskRow({
               <input
                 type="checkbox"
                 checked={s.done}
-                disabled={readOnly}
+                disabled={readOnly || busy}
                 onChange={(e) => onSubtask(s.id, e.target.checked)}
               />
               <span className={s.done ? "done" : ""}>{s.title}</span>

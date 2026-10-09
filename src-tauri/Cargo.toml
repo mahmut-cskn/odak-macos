@@ -1,6 +1,6 @@
 [package]
 name = "odak"
-version = "1.6.0"
+version = "1.7.0"
 description = "Yerel Pomodoro ve görev planlayıcı"
 authors = ["Mahmut Coskun"]
 edition = "2021"

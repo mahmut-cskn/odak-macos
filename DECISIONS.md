@@ -52,3 +52,13 @@
 - Distant recurrence choices are read-only projections; starting one materializes only that selected occurrence in the existing SQLite transaction, with no schema migration or historical changes.
 - An ongoing work session stays pinned and locked in the picker even if another occurrence would normally be the nearest, preserving the active timer without duplicate series choices.
 - v1.6.0 is built and published without replacing or restarting the installed app or directly writing to the user's database.
+- v1.7.0 displays a compact expandable checklist for the selected focus task; native subtask changes update only the requested flag and preserve timer timestamps, sessions and task status.
+- Read-only lazy recurrence previews show checklists but require starting the occurrence before changing its checklist, so selecting a future task still never writes data.
+- Empty-space clicks and Enter/Space on Today/List task cards select the task and load its duration without starting a session; child controls retain their existing actions and an ongoing work session stays locked.
+- All task cards use a sage border (#ccd8c8 in light mode, #42594b in dark mode) to complement the existing dark green theme; selection has a distinct green edge.
+- Completed cards and their details are read-only, including labels, priorities, notes, checklist and dates; the existing explicit completion-undo circle remains available outside historical read-only days.
+- Completed summaries use actual recorded focus and the latest recorded planned duration, and identify early sessions by actualMin being below plannedMin; no completion-method fields or historical data are invented or migrated.
+- Optional plan/start/end/due fields appear in completed details only when stored, and opening completed views never dispatches editor or persistence actions.
+- Idle focus previews use the selected task's planned duration even after a finished break; selection preserves the idle timer and recorded history.
+- Finished one-second work sessions count as complete sessions with exact fractional minutes; positive sub-minute focus displays seconds instead of rounding to zero minutes.
+- v1.7.0 is packaged and published without restarting or replacing the installed app or directly changing the user's SQLite data.

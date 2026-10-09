@@ -16,6 +16,8 @@ import {
   validatePomodoroMin,
   focusCandidates,
   recommendFocus,
+  formatElapsed,
+  taskWorkSummary,
 } from "../src/domain";
 describe("next focus recommendations and unique recurrence choices", () => {
   const task = (id: string, date: string | null) => ({
@@ -225,6 +227,44 @@ describe("completed session accounting", () => {
         session("break", "2026-10-08", 15),
       ]),
     ).toBe(45);
+  });
+  it("counts one-second finished work as an entire session while keeping exact focus time", () => {
+    const tiny = { ...session("work", "2026-10-08", 45), actualMin: 1 / 60 };
+    const summary = stats(
+      [tiny, session("break", "2026-10-08", 15)],
+      "2026-10-08",
+    );
+    expect(summary.sessionCount).toBe(1);
+    expect(summary.daily).toBe(1 / 60);
+    expect(formatMinutes(summary.daily)).toBe("1sn");
+    expect(formatElapsed(summary.daily)).toBe("1sn");
+    expect(formatElapsed(60.5)).toBe("1sa 30sn");
+  });
+  it("summarizes actual task work and the last planned duration without editing history", () => {
+    const older = session("work", "2026-10-07", 45),
+      last = { ...session("work", "2026-10-08", 60), actualMin: 30 };
+    const unrelated = { ...session("work", "2026-10-08", 90), taskId: "other" };
+    const records = [
+        last,
+        unrelated,
+        session("break", "2026-10-08", 15),
+        older,
+      ],
+      before = JSON.stringify(records);
+    const summary = taskWorkSummary("a", records);
+    expect(summary.work).toHaveLength(2);
+    expect(summary.totalMin).toBe(75);
+    expect(summary.last.actualMin).toBe(30);
+    expect(summary.last.plannedMin).toBe(60);
+    expect(JSON.stringify(records)).toBe(before);
+  });
+  it("manual completion never derives focus credit from a configured Pomodoro duration", () => {
+    const task = newTask();
+    task.status = "completed";
+    task.completedAt = Date.now();
+    expect(taskPomodoroMin(task, { [task.id]: 45 }, 30)).toBe(45);
+    expect(taskWorkSummary(task.id, []).totalMin).toBe(0);
+    expect(stats([]).sessionCount).toBe(0);
   });
   it("counts actual early-finish time in totals, labels and the line graph", async () => {
     const { dailyTrend } = await import("../src/domain");

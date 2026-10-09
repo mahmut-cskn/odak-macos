@@ -22,9 +22,9 @@ DMG indirmeleri için SHA-256 dosyası da aynı Release’te bulunur.
 ## Kullanım
 
 - **Bugün:** Günün gündemi ve sayaç. **Yeni görev** ile görev oluştur; zorunlu **Pomodoro süresi** alanına 1–90 dakika gir. Görevin sağındaki ▶ bu süreyi kullanır: 30 dakika kaydettiysen oturum 30’dan başlar. Sayaçtaki görev listesinden de seçim yapabilirsin. Liste her zaman görünür; çalışan/duraklatılmış oturumda kilitlidir, mola sonunda başka görev seçilebilir. Görevsiz yeni odak başlatılamaz. Sayaçtaki görev adına tıklayınca yalnızca adını düzenlersin, süre etkilenmez.
-- **Liste:** Tarih vermeden görev ekle; başlık, etiket ve pomodoro süresi zorunludur. `…` menüsünden bugüne, yarına veya istediğin güne taşı.
+- **Liste:** Tarih vermeden görev ekle; başlık, etiket ve pomodoro süresi zorunludur. `…` menüsünden bugüne, yarına veya istediğin güne taşı. Bugün ve Liste’de kartın boş alanına tıklamak görevi üstteki panele seçer ve süresini yükler; oturumu başlatmaz. Klavyeyle karta odaklanıp Enter veya boşluk da kullanabilirsin. Başlık düzenleme, yıldız, checkbox ve oynatma kontrolleri kendi işlevini korur. Çalışan/duraklatılmış çalışma oturumunun görevi karttan değiştirilmez.
 - **Takvim:** Ay görünümünde tekrarların gelecekteki günlerini de gör; bir gün seç; o günün görevlerini, geçmişte tamamlananlar dahil gör. Geçmiş günler salt okunurdur: görev oluşturulamaz, değiştirilemez veya pomodoro başlatılamaz. **Bu güne görev ekle** ile bugün veya ileri bir tarihe plan yap. Sayaç paneli Bugün ve Liste’de görünür; diğer sekmelere geçmek çalışan sayacı etkilemez.
-- **Tamamlanan:** Görevin solundaki yuvarlakla tamamla. Buradaki ✓ yuvarlağına yeniden basınca görev eski gününe/listesine geri döner. **Biten odak oturumları** altında eski görevsiz oturumlar dahil çalışma geçmişini de görürsün; oturum bitmesi görevi tamamlamaz.
+- **Tamamlanan:** En yeni tamamlanan görev üsttedir. Kartta etiket, yıldız, toplam gerçek odak, pomodoro, varsa iş tahmini, oturum sayısı ve son oturumun gerçek/planlanan süresi görünür. Karta veya başlığına tıklayınca salt okunur notlar, alt görevler, odak geçmişi ve yalnızca girilmiş plan tarihleri açılır. Düzenleme ve silme yoktur. Buradaki ✓ yuvarlağına yeniden basınca görev eski gününe/listesine geri döner; bu kasıtlı geri alma kontrolü korunur. **Biten odak oturumları** altında eski görevsiz oturumlar dahil çalışma geçmişini de görürsün; oturum bitmesi görevi tamamlamaz.
 - **Ayarlar:** Çalışma **1–90 dakika**, mola **1–30 dakika**; varsayılan **45/15**. Serbest giriş vardır, hazır süre ön ayarları yoktur.
 
 **Pomodoro görevi kendiliğinden tamamlamaz.** Bitmiş çalışma oturumları görevin toplam odak süresine eklenir. Tahmin girdiysen toplam süre tahminle birlikte gösterilir. Uzun bir işi günün gündemine alıp birden fazla oturumla ilerletebilirsin.
@@ -40,6 +40,10 @@ Mola sırasında **İptal et** düğmesi yoktur; molayı **Duraklat / Devam et**
 Panelde **Sıradaki odak** önerisi, bugünün aktif görevlerini 5 yıldızdan başlayıp 4, 3, 2 ve 1 yıldıza doğru değerlendirir; yıldızsız görevler en son gelir. Bugünde başka iş kalmadıysa tarihsiz listedeki en yüksek yıldızlı görev önerilir. Eşit öncelikte önce plan saati, sonra oluşturma sırası kullanılır. Süresi dolan veya Bitir ile kapatılan oturumun görevi sonraki öneride seçili kalmaz; istersen aktif bir görevi seçim listesinden elle tekrar seçebilirsin. Mola sırasında sıradaki görevi seçmek mevcut molayı veya süre kaydını değiştirmez.
 
 Görev seçim listesinde her tekrar serisinden yalnızca **en yakın tamamlanmamış bugün/gelecek örneği** görünür; tarihi de yanında yazılır. Örneğin aylık işin sıradaki örneği 29 gün sonradaysa o görünür, 59 gün sonraki kopyası görünmez. Henüz kaydedilmemiş örnekler seçimde salt okunur olarak hesaplanır; sadece odak başlatıldığında seçilen günün kaydı oluşturulur. Aynı başlığa sahip farklı işler birbirine karıştırılmaz; geçmiş ve diğer tekrar kayıtları silinmez.
+
+Pomodoro panelinde seçili görevin **Alt görevler** bölümü açılıp kapatılabilir; kutular doğrudan işaretlenebilir. Tiklemek süreyi veya ana görevin durumunu değiştirmez. Henüz kaydedilmemiş tekrar örneğinde işaretlemek için önce oturumu başlat. Mola bittiğinde yeni bir görev seçersen başlatmadan onun süresi görünür; sayaç 00:00’da takılı kalmaz.
+
+**Toplam oturum**, Bitir ile kaydedilen 1 saniyelik çalışma dahil her bitmiş çalışma oturumunu sayar. Gerçek süre saniye hassasiyetiyle korunur; bir dakikadan kısa toplamlar `1sn` gibi görünür. Görevi doğrudan tiklemek planlanan 45 dakikayı odak süresine eklemez.
 
 Görev, seri, alt görev veya etiket silme; oturum iptali ve JSON ile verileri değiştirme işlemleri önce onay ister. **Vazgeç** hiçbir değişiklik yapmaz.
 
@@ -75,7 +79,7 @@ Etiket seçim listesi `labels.json`, yıldız öncelikleri `priorities.json`, g�
 
 ### Çalışan sayaç sırasında sürüm güncellemesi
 
-Yeni DMG’yi sayaç çalışırken mevcut uygulamanın üzerine kurma. Oturumunu bitir, menü çubuğundan **Çık** seç, sonra yeni paketi Applications’a sürükle. Uygulama verileri ayrı app-data klasöründe kalır; v1.6.0 için SQLite şema değişikliği veya eski görev dönüştürmesi yoktur.
+Yeni DMG’yi sayaç çalışırken mevcut uygulamanın üzerine kurma. Oturumunu bitir, menü çubuğundan **Çık** seç, sonra yeni paketi Applications’a sürükle. Uygulama verileri ayrı app-data klasöründe kalır; v1.7.0 için SQLite şema değişikliği veya eski görev dönüştürmesi yoktur.
 
 ![Odak istatistikleri](docs/screenshot-stats.png)
 

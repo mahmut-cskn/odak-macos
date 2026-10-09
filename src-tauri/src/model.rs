@@ -269,6 +269,27 @@ pub fn validate_label_change(task: &Task, previous: Option<&Task>) -> Result<(),
     }
     Ok(())
 }
+pub fn set_subtask(
+    data: &mut Data,
+    task_id: &str,
+    subtask_id: &str,
+    done: bool,
+) -> Result<(), String> {
+    let task = data
+        .tasks
+        .iter_mut()
+        .find(|task| {
+            task.id == task_id && task.status == "active" && task.recurrence_rule.is_none()
+        })
+        .ok_or("Düzenlenebilir aktif görev bulunamadı.")?;
+    let subtask = task
+        .subtasks
+        .iter_mut()
+        .find(|subtask| subtask.id == subtask_id)
+        .ok_or("Alt görev bulunamadı.")?;
+    subtask.done = done;
+    Ok(())
+}
 // Rebuild only unstarted future instances when a series changes.
 pub fn prune_future_instances(data: &mut Data, series: &str, today: NaiveDate) -> Vec<NaiveDate> {
     let mut removed = vec![];
@@ -592,6 +613,58 @@ mod tests {
     use super::*;
     fn task() -> Task {
         serde_json::from_value(serde_json::json!({"id":"task","title":"Task","label":"İş","color":"#438470","notes":"","status":"active","completedAt":null,"estimateMin":null,"scheduledDate":"2026-10-01","startAt":null,"endAt":null,"dueAt":null,"recurrenceRule":null,"seriesId":null,"subtasks":[],"createdAt":0})).unwrap()
+    }
+    #[test]
+    fn one_second_finished_work_is_a_completed_session_with_exact_actual_time() {
+        let mut data = Data::default();
+        data.tasks.push(task());
+        data.timer.begin(Some("task".into()), "work", 45, 1000);
+        finish_task_session(&mut data, "task", Some(1000), 2000).unwrap();
+        assert_eq!(data.sessions.len(), 1);
+        assert_eq!(data.sessions[0].actual_min, 1.0 / 60.0);
+        assert_eq!(data.sessions[0].planned_min, 45);
+        assert_eq!(data.tasks[0].status, "completed");
+        assert_eq!(data.timer.phase, "idle");
+    }
+    #[test]
+    fn subtask_check_changes_only_one_flag_and_preserves_running_and_paused_timer() {
+        for paused in [false, true] {
+            let mut data = Data::default();
+            let mut parent = task();
+            parent.subtasks.push(Subtask {
+                id: "step".into(),
+                title: "Step".into(),
+                done: false,
+            });
+            data.tasks.push(parent);
+            data.timer.begin(Some("task".into()), "work", 45, 1000);
+            if paused {
+                data.timer.pause(2000).unwrap();
+            }
+            let mut expected = serde_json::to_value(&data).unwrap();
+            set_subtask(&mut data, "task", "step", true).unwrap();
+            expected["tasks"][0]["subtasks"][0]["done"] = serde_json::json!(true);
+            assert_eq!(serde_json::to_value(&data).unwrap(), expected);
+            assert_eq!(data.tasks[0].status, "active");
+        }
+    }
+    #[test]
+    fn subtask_check_rejects_completed_or_missing_items_without_changes() {
+        let mut data = Data::default();
+        let mut parent = task();
+        parent.status = "completed".into();
+        parent.completed_at = Some(1000);
+        parent.subtasks.push(Subtask {
+            id: "step".into(),
+            title: "Step".into(),
+            done: false,
+        });
+        data.tasks.push(parent);
+        let before = serde_json::to_value(&data).unwrap();
+        for (task, step) in [("task", "step"), ("missing", "step"), ("task", "missing")] {
+            assert!(set_subtask(&mut data, task, step, true).is_err());
+            assert_eq!(serde_json::to_value(&data).unwrap(), before);
+        }
     }
     #[test]
     fn lazy_focus_start_creates_only_selected_occurrence_and_preserves_live_data() {
