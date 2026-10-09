@@ -30,3 +30,4 @@
 - Task priorities are optional 1–5 stars stored atomically in independent priorities.json preferences; existing SQLite/task/session/timer payloads are never migrated or backfilled.
 - Recurrence instances inherit the series priority until explicitly rated; default task ordering remains unchanged unless the user selects priority sorting.
 - Drive ZIP backups include both labels.json and priorities.json when present; JSON database import/export keeps its existing schema.
+- v1.3.1 gives timer cancellation a red outlined button with theme-aware text and focus states; its confirmation and timer logic remain unchanged, and packaging never restarts an active installed timer.

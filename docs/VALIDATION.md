@@ -85,3 +85,10 @@ Yerel entegrasyon: başka Odak süreci kapalıyken `npm run tauri build -- --deb
 - Güncellemeden önce 47 görev ve 3 oturum içeren ek Drive ZIP yedeği başarıyla gönderildi. Yardımcı artık varsa yıldız önceliklerini de ZIP’e koyuyor; açık WAL veritabanı testi bu dosyayı doğruluyor.
 - Universal DMG CRC kontrolünü geçti; kurulu paket DMG’deki çalıştırılabilirle birebir aynı. `lipo` x86_64 + arm64 gösteriyor ve `codesign --verify --deep --strict` başarılı.
 - `/Applications/Odak.app` v1.3.0 kuruldu ve normal kullanıcı verisiyle açıldı. Salt okunur SQLite kontrolü, önce/sonra 47 görevin, 3 oturumun ve idle sayaç kaydının birebir aynı olduğunu doğruladı; `quick_check=ok`. Gerçek görev içerikleri test raporlarına veya GitHub’a yazılmadı.
+
+## v1.3.1 — belirgin iptal butonu
+
+- Yalnızca iptal butonunun görünümü değişti: kırmızı kenarlık, tema uyumlu kırmızı yazı, belirgin hover ve klavye odağı. Çalışan sayaç ve onay akışı değişmedi.
+- Mevcut sayaç kontrolü, ad düzenleme sırasında süreyi koruma ve iptal/silme onayı UI testleri geçti: 3 test. Üretim TypeScript/Vite derlemesi başarılı.
+- İzole örnek görevlerle açık ve koyu temada kırmızı kenarlık ve yazı doğrulandı; görsel inceleme tamamlandı.
+- Universal paket arm64 ve x86_64 içeriyor; ad-hoc imza ve DMG CRC kontrolü başarılı. Çalışan kurulu uygulama kapatılmadan yeni paket hazırlandı; kullanıcı SQLite’ına doğrudan yazılmadı.

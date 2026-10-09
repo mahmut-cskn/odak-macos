@@ -273,7 +273,18 @@ main {
 }
 .cancel-btn {
   font-size: 11px;
-  color: #7c8b70;
+  font-weight: 600;
+  color: var(--red);
+  border: 1px solid var(--red);
+  background: var(--surface);
+  min-height: 36px;
+  padding: 9px 14px;
+}
+.cancel-btn:hover:not(:disabled) {
+  background: rgba(175, 85, 74, 0.12);
+}
+.cancel-btn:focus-visible {
+  outline-color: var(--red);
 }
 .timer-footer {
   border-top: 1px solid #d7dfcb;

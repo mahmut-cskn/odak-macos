@@ -29,6 +29,8 @@ DMG indirmeleri için SHA-256 dosyası da aynı Release’te bulunur.
 
 **Pomodoro görevi kendiliğinden tamamlamaz.** Bitmiş çalışma oturumları görevin toplam odak süresine eklenir. Tahmin girdiysen toplam süre tahminle birlikte gösterilir. Uzun bir işi günün gündemine alıp birden fazla oturumla ilerletebilirsin.
 
+**Tahmini süre**, işin tamamı için beklediğin toplam odak süresidir; pomodoro süresini belirlemez. Örneğin toplam tahmini 8 saat olan bir işte 45 dakikalık oturumlarla ilerleyebilirsin. Tek oturumun süresini başlamadan önce sayaç panelindeki **Çalışma** alanından ayarla. Harcanan toplamı tahminle karşılaştırmak, sonraki benzer işler için daha gerçekçi zaman ayırmanı sağlar.
+
 **Duraklat / Devam et** kalan süreyi korur. **İptal et** yalnızca o anki oturumu siler, hiçbir süre eklemez; önceden bitmiş oturumlar korunur. Çalışma bitince mola başlar; mola sonunda **Devam et** veya **5 dk daha** seçersin. Uygulamanın penceresini kapatmak sayacı durdurmaz. Menü çubuğundan **Çık** ile tamamen kapatsan bile tekrar açıldığında sayaç kayıtlı zaman damgasından hesaplanır. Uygulama tamamen kapalıyken bildirim gönderilemez; açılınca süresi geçen oturumlar kaydedilir.
 
 Görev, seri, alt görev veya etiket silme; oturum iptali ve JSON ile verileri değiştirme işlemleri önce onay ister. **Vazgeç** hiçbir değişiklik yapmaz.
