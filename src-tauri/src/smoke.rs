@@ -85,7 +85,20 @@ fn checks(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
         execute(app.clone(), app.state::<AppState>(), name.into(), payload)
     };
     let task:Task=serde_json::from_value(json!({"id":"native-task","title":"Yerel doğrulama","label":"Test","color":"#438470","notes":"Native SQLite test","status":"active","completedAt":null,"estimateMin":480,"scheduledDate":Local::now().date_naive().to_string(),"startAt":null,"endAt":null,"dueAt":null,"recurrenceRule":null,"seriesId":null,"subtasks":[],"createdAt":Local::now().timestamp_millis()})).unwrap();
-    invoke("save_task", serde_json::to_value(&task).unwrap())?;
+    let mut fields = serde_json::to_value(&task).unwrap();
+    fields["pomodoroMin"] = json!(30);
+    if invoke("save_task", serde_json::to_value(&task).unwrap()).is_ok() {
+        return Err("New task accepted without required Pomodoro duration".into());
+    }
+    invoke("save_task", fields)?;
+    if snapshot(app.state::<AppState>())?
+        .task_durations
+        .get(&task.id)
+        != Some(&30)
+    {
+        return Err("Task-specific Pomodoro duration was not saved".into());
+    }
+    result.push("Required task duration persists outside existing task/timer payloads".into());
     invoke("start", json!({"taskId":task.id,"workMin":1,"breakMin":1}))?;
     let before_priority = snapshot(app.state::<AppState>())?;
     invoke("set_priority", json!({"id":task.id,"rating":4}))?;
@@ -207,7 +220,9 @@ fn checks(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
             .date_naive()
             .to_string(),
     );
-    invoke("save_task", serde_json::to_value(planned).unwrap())?;
+    let mut fields = serde_json::to_value(planned).unwrap();
+    fields["pomodoroMin"] = json!(30);
+    invoke("save_task", fields)?;
     tick(app)?;
     if !snapshot(app.state::<AppState>())?
         .data

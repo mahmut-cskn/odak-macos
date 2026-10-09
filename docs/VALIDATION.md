@@ -92,3 +92,14 @@ Yerel entegrasyon: başka Odak süreci kapalıyken `npm run tauri build -- --deb
 - Mevcut sayaç kontrolü, ad düzenleme sırasında süreyi koruma ve iptal/silme onayı UI testleri geçti: 3 test. Üretim TypeScript/Vite derlemesi başarılı.
 - İzole örnek görevlerle açık ve koyu temada kırmızı kenarlık ve yazı doğrulandı; görsel inceleme tamamlandı.
 - Universal paket arm64 ve x86_64 içeriyor; ad-hoc imza ve DMG CRC kontrolü başarılı. Çalışan kurulu uygulama kapatılmadan yeni paket hazırlandı; kullanıcı SQLite’ına doğrudan yazılmadı.
+
+## v1.4.0 — görev seçimi ve görev pomodoro süresi
+
+- 17 TypeScript, 26 Rust, 20 Chromium UI ve 4 Python testi geçti: toplam 67. `cargo clippy --all-targets --locked -- -D warnings` temiz.
+- Yeni görev ve hızlı eklemede boş, sıfır, 90’dan büyük veya kesirli süreyle görev kaydedilemiyor. 30 dakikalık yeni görev, toplam tahmini 120 dakika ve panel değeri 45 olsa da görevdeki ▶ ile 30 dakikadan başlıyor.
+- Görev listesi çalışma ve duraklamada görünür/kilitli; mola sonunda etkinleşiyor. Yeni görev seçilince onun süresi yükleniyor ve Devam et o görevle yeni oturum başlatıyor.
+- Çalışan 45 dakikalık görevde pomodoro tercihini 30 yapmak tüm görev/oturum/sayaç alanlarını aynı bırakıyor; sonraki oturum 30 dakikadan başlıyor. Gerçek SQLite birim testi aktif sayaç alanlarını koruyor; veritabanı yazması başarısız olursa süre tercihi geri alınıyor.
+- Eski görevler için süre dosyası veya alanı otomatik oluşturulmuyor. Süre dosyasının yeniden açılışta kalıcılığı, tekrar serisinden miras ve günlük örnek önceliği test edildi.
+- Yeni JSON süre bilgilerini taşıyor; eski JSON yedekleri okunuyor. Açık WAL veritabanı testi Drive ZIP’ine süre dosyası/JSON metadata dahil edilirken kaynak verilerin korunduğunu doğruluyor. Kurulu günlük yardımcı yeni dosyayı destekleyecek şekilde güncellendi; token ve zamanlama değiştirilmedi.
+- [Görev süresi penceresi](screenshot-task-duration.png) ve [30 dakika + görünür görev listesi](screenshot-focus-duration.png) izole örneklerle görsel olarak kontrol edildi.
+- Universal DMG hazırlandı; mimari, ad-hoc imza ve CRC doğrulaması geçti. Çalışan kurulu Odak kapatılmadı, yeniden açılmadı veya üzerine kurulmadı; kullanıcının gerçek SQLite’ına doğrudan yazılmadı. Yeni sürüm oturum bitince kurulabilir.

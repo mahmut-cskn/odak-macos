@@ -168,6 +168,7 @@ pub struct Snapshot {
     pub service_error: Option<String>,
     pub labels: Vec<crate::labels::Label>,
     pub priorities: std::collections::BTreeMap<String, u8>,
+    pub task_durations: std::collections::BTreeMap<String, u32>,
 }
 
 pub fn validate_settings(s: &Settings) -> Result<(), String> {

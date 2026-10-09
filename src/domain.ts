@@ -72,6 +72,7 @@ export interface Snapshot {
   serviceError: string | null;
   labels?: LabelEntry[];
   priorities?: Record<string, number>;
+  taskDurations?: Record<string, number>;
 }
 export const defaultSettings: Settings = {
   defaultWorkMin: 45,
@@ -272,6 +273,25 @@ export function priorityFor(task: Task, priorities: Record<string, number>) {
     (task.seriesId ? priorities[task.seriesId] : undefined) ??
     0
   );
+}
+export function taskPomodoroMin(
+  task: Task,
+  durations: Record<string, number>,
+  fallback: number,
+) {
+  return (
+    durations[task.id] ??
+    (task.seriesId ? durations[task.seriesId] : undefined) ??
+    fallback
+  );
+}
+export function validatePomodoroMin(minutes: number | string) {
+  return typeof minutes === "number" &&
+    Number.isInteger(minutes) &&
+    minutes >= 1 &&
+    minutes <= 90
+    ? null
+    : "Pomodoro süresi zorunlu; 1–90 arasında tam dakika gir.";
 }
 export function validatePlanningChange(
   task: Task,

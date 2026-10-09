@@ -28,13 +28,17 @@ class BackupTests(unittest.TestCase):
             before = list(writer.execute("SELECT * FROM tasks")), list(writer.execute("SELECT * FROM meta"))
             self.assertTrue(source.with_name(source.name + "-wal").exists())
             (root / "priorities.json").write_text('{"existing": 5}')
+            (root / "task-durations.json").write_text('{"existing": 30, "removed": 15}')
             destination = root / "backup.zip"
             summary = backup.create_archive(source, destination, datetime.now().astimezone())
             self.assertEqual(summary, {"tasks": 1, "sessions": 0, "phase": "work"})
             self.assertEqual(before, (list(writer.execute("SELECT * FROM tasks")), list(writer.execute("SELECT * FROM meta"))))
             with zipfile.ZipFile(destination) as archive:
                 self.assertEqual(json.loads(archive.read("priorities.json")), {"existing": 5})
-                data = json.loads(archive.read("odak-yedek.json"))["data"]
+                self.assertEqual(json.loads(archive.read("task-durations.json")), {"existing": 30, "removed": 15})
+                envelope = json.loads(archive.read("odak-yedek.json"))
+                self.assertEqual(envelope["taskDurations"], {"existing": 30})
+                data = envelope["data"]
                 self.assertEqual(data["timer"], timer)
                 self.assertEqual(data["tasks"], [task])
                 archive.extract("odak.sqlite3", root / "restored")

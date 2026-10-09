@@ -38,6 +38,8 @@ import {
   dailyTrend,
   isPastTask,
   priorityFor,
+  taskPomodoroMin,
+  validatePomodoroMin,
   validatePlanningChange,
   cloneTask,
   newId,
@@ -94,6 +96,7 @@ export default function App() {
     [busy, setBusy] = useState(false),
     [quickTitle, setQuickTitle] = useState("");
   const [focusTaskId, setFocusTaskId] = useState("");
+  const [quickWork, setQuickWork] = useState<number | string>(45);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [prioritySort, setPrioritySort] = useState(false);
   const requestDelete: ConfirmRequest = (title, message, action) => {
@@ -148,12 +151,26 @@ export default function App() {
       cleanups.forEach((fn) => fn());
     };
   }, [reload]);
+  const chosenTask = snapshot?.data.tasks.find(
+    (t) =>
+      t.id ===
+      (focusTaskId ||
+        (snapshot.data.timer.breakReady ? snapshot.data.timer.taskId : "")),
+  );
+  const chosenDuration =
+    chosenTask && snapshot
+      ? taskPomodoroMin(
+          chosenTask,
+          snapshot.taskDurations || {},
+          snapshot.data.settings.defaultWorkMin,
+        )
+      : snapshot?.data.settings.defaultWorkMin;
   useEffect(() => {
     if (snapshot) {
       setWork(
-        snapshot.data.timer.phase !== "idle" || snapshot.data.timer.breakReady
+        snapshot.data.timer.phase !== "idle"
           ? snapshot.data.timer.workMin
-          : snapshot.data.settings.defaultWorkMin,
+          : (chosenDuration ?? snapshot.data.settings.defaultWorkMin),
       );
       setRest(
         snapshot.data.timer.phase !== "idle" || snapshot.data.timer.breakReady
@@ -165,7 +182,13 @@ export default function App() {
     snapshot?.data.settings.defaultWorkMin,
     snapshot?.data.settings.defaultBreakMin,
     snapshot?.data.timer.phase,
+    snapshot?.data.timer.breakReady,
+    focusTaskId,
+    chosenDuration,
   ]);
+  useEffect(() => {
+    if (snapshot) setQuickWork(snapshot.data.settings.defaultWorkMin);
+  }, [snapshot?.data.settings.defaultWorkMin]);
   useEffect(() => {
     if (!quick && snapshot) {
       isPermissionGranted()
@@ -201,8 +224,14 @@ export default function App() {
             e.preventDefault();
             const t = newTask();
             t.title = quickTitle;
-            if (await run("save_task", t)) {
+            const validation = validatePomodoroMin(quickWork);
+            if (validation) {
+              setError(validation);
+              return;
+            }
+            if (await run("save_task", { ...t, pomodoroMin: quickWork })) {
               setQuickTitle("");
+              setQuickWork(snapshot?.data.settings.defaultWorkMin || 45);
               await hideQuick();
             }
           }}
@@ -212,12 +241,32 @@ export default function App() {
             autoFocus
             placeholder="Aklındaki işi yaz…"
             aria-label="Görev başlığı"
+            required
+            maxLength={250}
             value={quickTitle}
             onChange={(e) => setQuickTitle(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Escape") hideQuick();
             }}
           />
+          <label className="quick-duration">
+            Pomodoro · dk
+            <input
+              aria-label="Pomodoro süresi"
+              type="number"
+              required
+              min="1"
+              max="90"
+              step="1"
+              className="required-field"
+              value={quickWork}
+              onChange={(e) =>
+                setQuickWork(
+                  e.target.value === "" ? "" : Number(e.target.value),
+                )
+              }
+            />
+          </label>
           <button className="primary" disabled={busy || !quickTitle.trim()}>
             <Plus size={17} />
             Ekle
@@ -255,14 +304,17 @@ export default function App() {
     ...new Set(data.tasks.map((t) => t.label).filter(Boolean)),
   ].sort();
   const priorities = snapshot.priorities || {};
+  const taskDurations = snapshot.taskDurations || {};
   const calendarReadOnly = tab === "calendar" && day < dayKey();
   const focusTasks = data.tasks.filter(
     (t) => t.status === "active" && !t.recurrenceRule && !isPastTask(t),
   );
-  const selectedFocusTask = focusTasks.find((t) => t.id === focusTaskId);
-  const timerTask =
-    activeTask ||
-    (!active && !timer.breakReady ? selectedFocusTask : undefined);
+  const selectedFocusTask = focusTasks.find(
+    (t) => t.id === (focusTaskId || (timer.breakReady ? timer.taskId : "")),
+  );
+  const timerTask = active
+    ? activeTask
+    : selectedFocusTask || (timer.breakReady ? activeTask : undefined);
   let tasks =
     tab === "today"
       ? tasksForDay(data.tasks, dayKey()).filter((t) => t.status === "active")
@@ -299,11 +351,16 @@ export default function App() {
       endAt: null,
     });
   };
-  const start = (taskId: string) => {
+  const start = (taskId: string, usePanel = false) => {
+    const task = data.tasks.find((t) => t.id === taskId);
+    const minutes =
+      usePanel || !task
+        ? work
+        : taskPomodoroMin(task, taskDurations, data.settings.defaultWorkMin);
     if (
-      !Number.isInteger(work) ||
-      work < 1 ||
-      work > 90 ||
+      !Number.isInteger(minutes) ||
+      minutes < 1 ||
+      minutes > 90 ||
       !Number.isInteger(rest) ||
       rest < 1 ||
       rest > 30
@@ -311,7 +368,8 @@ export default function App() {
       setError("Çalışma 1–90, mola 1–30 dakika olmalı.");
       return;
     }
-    return run("start", { taskId, workMin: work, breakMin: rest });
+    setFocusTaskId(taskId);
+    return run("start", { taskId, workMin: minutes, breakMin: rest });
   };
   return (
     <div className="app-shell">
@@ -469,16 +527,10 @@ export default function App() {
                       <>
                         <button
                           className="primary"
-                          disabled={
-                            busy ||
-                            (!focusTasks.some((t) => t.id === timer.taskId) &&
-                              !selectedFocusTask)
-                          }
+                          disabled={busy || !selectedFocusTask}
                           onClick={() => {
-                            if (focusTasks.some((t) => t.id === timer.taskId))
-                              run("continue_work");
-                            else if (selectedFocusTask)
-                              start(selectedFocusTask.id);
+                            if (selectedFocusTask)
+                              start(selectedFocusTask.id, true);
                           }}
                         >
                           <Play size={16} />
@@ -493,7 +545,7 @@ export default function App() {
                         className="primary"
                         disabled={busy || !selectedFocusTask}
                         onClick={() =>
-                          selectedFocusTask && start(selectedFocusTask.id)
+                          selectedFocusTask && start(selectedFocusTask.id, true)
                         }
                       >
                         <Play size={16} />
@@ -502,25 +554,31 @@ export default function App() {
                     )}
                   </div>
                 </div>
-                {!active &&
-                  (!timer.breakReady ||
-                    !focusTasks.some((t) => t.id === timer.taskId)) && (
-                    <div className="focus-picker">
-                      <select
-                        aria-label="Odaklanılacak görev"
-                        value={selectedFocusTask?.id || ""}
-                        onChange={(e) => setFocusTaskId(e.target.value)}
-                      >
-                        <option value="">Hangi işe odaklanacaksın?</option>
-                        {focusTasks.map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.title}
-                            {t.label ? ` · ${t.label}` : ""}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
+                <div className="focus-picker">
+                  <select
+                    aria-label="Odaklanılacak görev"
+                    disabled={active || busy}
+                    value={
+                      (active ? activeTask?.id : selectedFocusTask?.id) || ""
+                    }
+                    onChange={(e) => setFocusTaskId(e.target.value)}
+                  >
+                    <option value="">Hangi işe odaklanacaksın?</option>
+                    {activeTask &&
+                      !focusTasks.some((t) => t.id === activeTask.id) && (
+                        <option value={activeTask.id}>
+                          {activeTask.title}
+                          {activeTask.label ? ` · ${activeTask.label}` : ""}
+                        </option>
+                      )}
+                    {focusTasks.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.title}
+                        {t.label ? ` · ${t.label}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <div className="timer-footer">
                   <div className="duration-fields">
                     <label>
@@ -1004,11 +1062,30 @@ export default function App() {
           catalog={catalog}
           defaultDay={tab === "calendar" ? day : dayKey()}
           priority={priorityFor(editor, priorities)}
+          pomodoroMin={taskPomodoroMin(
+            editor,
+            taskDurations,
+            data.settings.defaultWorkMin,
+          )}
           confirmDelete={requestDelete}
           onClose={() => setEditor(null)}
-          onSave={async (t, rating) => {
+          onSave={async (t, rating, minutes) => {
             const save = async () => {
-              if (!(await run("save_task", t))) return false;
+              const isNew = !data.tasks.some((task) => task.id === t.id);
+              const previousMinutes = taskPomodoroMin(
+                editor,
+                taskDurations,
+                data.settings.defaultWorkMin,
+              );
+              if (
+                !(await run("save_task", {
+                  ...t,
+                  ...(isNew || minutes !== previousMinutes
+                    ? { pomodoroMin: minutes }
+                    : {}),
+                }))
+              )
+                return false;
               if (
                 rating > 0 &&
                 rating !== priorityFor(editor, priorities) &&
@@ -1286,6 +1363,7 @@ function TaskEditor({
   catalog,
   defaultDay,
   priority,
+  pomodoroMin,
   confirmDelete,
   onClose,
   onSave,
@@ -1298,9 +1376,10 @@ function TaskEditor({
   catalog: LabelEntry[];
   defaultDay: string;
   priority: number;
+  pomodoroMin: number;
   confirmDelete: ConfirmRequest;
   onClose: () => void;
-  onSave: (task: Task, rating: number) => Promise<void>;
+  onSave: (task: Task, rating: number, minutes: number) => Promise<void>;
   onDelete?: () => void;
   error: string;
   busy: boolean;
@@ -1309,6 +1388,7 @@ function TaskEditor({
     [validation, setValidation] = useState(""),
     [subtask, setSubtask] = useState("");
   const [rating, setRating] = useState(priority);
+  const [minutes, setMinutes] = useState<number | string>(pomodoroMin);
   const patch = (p: Partial<Task>) => setTask((t) => ({ ...t, ...p }));
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -1319,13 +1399,18 @@ function TaskEditor({
   }, [onClose]);
   const save = async () => {
     const message =
+      validatePomodoroMin(minutes) ||
       validateTask(task) ||
       validatePlanningChange(task, onDelete ? initial : undefined);
     if (message) {
       setValidation(message);
       return;
     }
-    await onSave({ ...task, title: task.title.trim() }, rating);
+    await onSave(
+      { ...task, title: task.title.trim() },
+      rating,
+      Number(minutes),
+    );
   };
   const changeDate = (value: string) => {
     const date = value || null;
@@ -1374,6 +1459,23 @@ function TaskEditor({
               value={task.title}
               onChange={(e) => patch({ title: e.target.value })}
             />
+          </label>
+          <label className="field">
+            Pomodoro süresi <span>Zorunlu · dakika</span>
+            <input
+              aria-label="Pomodoro süresi"
+              type="number"
+              required
+              min="1"
+              max="90"
+              step="1"
+              className="required-field"
+              value={minutes}
+              onChange={(e) =>
+                setMinutes(e.target.value === "" ? "" : Number(e.target.value))
+              }
+            />
+            <small>1–90 dakika · Görevin yanındaki ▶ bu süreyle başlar.</small>
           </label>
           <div className="field priority-field">
             <span>
@@ -1440,7 +1542,7 @@ function TaskEditor({
               />
             </label>
             <label className="field">
-              Tahmini süre <span>dakika</span>
+              Toplam iş tahmini <span>İsteğe bağlı · dakika</span>
               <input
                 aria-label="Tahmini süre"
                 type="number"

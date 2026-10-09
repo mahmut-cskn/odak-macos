@@ -88,16 +88,21 @@ def create_archive(source, destination, now):
         create_snapshot(source, snapshot)
         data = data_from_snapshot(snapshot)
         envelope = {"format": "odak-backup", "version": 1, "exportedAt": int(now.timestamp() * 1000), "data": data}
+        duration_file = source.with_name("task-durations.json")
+        if duration_file.is_file():
+            task_ids = {task["id"] for task in data["tasks"]}
+            task_ids.update(task["seriesId"] for task in data["tasks"] if task.get("seriesId"))
+            envelope["taskDurations"] = {key: value for key, value in read_json(duration_file).items() if key in task_ids}
         part = destination.with_suffix(".zip.part")
         try:
             with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED) as archive:
                 archive.write(snapshot, "odak.sqlite3")
                 archive.writestr("odak-yedek.json", json.dumps(envelope, ensure_ascii=False, indent=2))
-                for name in ("labels.json", "priorities.json"):
+                for name in ("labels.json", "priorities.json", "task-durations.json"):
                     preference = source.with_name(name)
                     if preference.is_file():
                         archive.writestr(name, preference.read_bytes())
-                archive.writestr("GERI-YUKLEME.txt", "ZIP'i açın. Odak'ta Ayarlar > JSON içe aktar ile odak-yedek.json dosyasını seçin.\nSayaç çalışırken geri yükleme yapılamaz. Mevcut veriler önce kurtarma kopyasına alınır.\nSQLite alternatifidir; canlı veritabanının üzerine kopyalamayın.\nEtiket seçim listesi labels.json, yıldız öncelikleri priorities.json dosyasında ayrı tutulur.\n")
+                archive.writestr("GERI-YUKLEME.txt", "ZIP'i açın. Odak'ta Ayarlar > JSON içe aktar ile odak-yedek.json dosyasını seçin.\nSayaç çalışırken geri yükleme yapılamaz. Mevcut veriler önce kurtarma kopyasına alınır.\nSQLite alternatifidir; canlı veritabanının üzerine kopyalamayın.\nEtiket seçim listesi labels.json, yıldız öncelikleri priorities.json dosyasında ayrı tutulur.\nGörev pomodoro süreleri JSON yedeğinde ve task-durations.json içinde yer alır.\n")
             os.chmod(part, 0o600)
             os.replace(part, destination)
         finally:

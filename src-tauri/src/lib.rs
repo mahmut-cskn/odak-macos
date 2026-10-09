@@ -1,3 +1,4 @@
+mod durations;
 mod labels;
 mod model;
 mod notifications;
@@ -26,6 +27,7 @@ struct Core {
     service_error: Option<String>,
     labels: labels::Catalog,
     priorities: priorities::Priorities,
+    durations: durations::Durations,
 }
 impl Core {
     fn snapshot(&self) -> Snapshot {
@@ -39,11 +41,31 @@ impl Core {
             service_error: self.service_error.clone(),
             labels: self.labels.available(&self.data.tasks),
             priorities: self.priorities.0.clone(),
+            task_durations: self.durations.0.clone(),
         }
     }
     fn commit(&mut self, next: Data) -> Result<(), String> {
         storage::save(&mut self.conn, &next)?;
         self.data = next;
+        Ok(())
+    }
+    fn commit_with_durations(
+        &mut self,
+        next: Data,
+        durations: Option<durations::Durations>,
+    ) -> Result<(), String> {
+        let Some(durations) = durations else {
+            return self.commit(next);
+        };
+        let path = self.path.with_file_name("task-durations.json");
+        durations.save(&path)?;
+        if let Err(error) = self.commit(next) {
+            self.durations
+                .save(&path)
+                .map_err(|rollback| format!("{error}; süre tercihi geri alınamadı: {rollback}"))?;
+            return Err(error);
+        }
+        self.durations = durations;
         Ok(())
     }
 }
@@ -183,12 +205,24 @@ fn execute(
         return Ok(snapshot);
     }
     let mut next = core.data.clone();
+    let mut pending_durations = None;
     let now = Local::now().timestamp_millis();
     // Apply any deadline before user actions; cancellation after a finished deadline cannot erase earned work.
     let finished = finish_due(&mut next, now);
     match action.as_str() {
         "save_task" => {
-            let mut task: Task = serde_json::from_value(payload).map_err(|e| e.to_string())?;
+            let mut fields = payload;
+            let duration = fields
+                .as_object_mut()
+                .ok_or("Görev geçersiz.")?
+                .remove("pomodoroMin");
+            let mut task: Task = serde_json::from_value(fields).map_err(|e| e.to_string())?;
+            let is_new = !next.tasks.iter().any(|old| old.id == task.id);
+            if let Some(minutes) = durations::validate_input(duration.as_ref(), is_new)? {
+                let mut durations = core.durations.clone();
+                durations.0.insert(task.id.clone(), minutes);
+                pending_durations = Some(durations);
+            }
             task.title = task.title.trim().into();
             validate_task(&task)?;
             validate_planning_change(
@@ -288,7 +322,12 @@ fn execute(
                 .ok_or("Yeni odak oturumu için bir görev seçin.")?;
             validate_focus_start(&next, id, Local::now().date_naive())?;
             let task = Some(id.to_string());
-            next.timer.begin(task, "work", next.timer.work_min, now);
+            let minutes = core.durations.for_task(
+                next.tasks.iter().find(|t| t.id == id).unwrap(),
+                next.timer.work_min,
+            );
+            next.timer.work_min = minutes;
+            next.timer.begin(task, "work", minutes, now);
         }
         "extend_break" => {
             if !next.timer.break_ready || next.timer.phase != "idle" {
@@ -311,7 +350,7 @@ fn execute(
         }
         _ => return Err("Bilinmeyen işlem.".into()),
     }
-    core.commit(next)?;
+    core.commit_with_durations(next, pending_durations)?;
     let snapshot = core.snapshot();
     drop(core);
     for phase in finished {
@@ -360,6 +399,8 @@ struct Backup {
     version: u32,
     exported_at: i64,
     data: Data,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task_durations: Option<durations::Durations>,
 }
 fn validate_backup(data: &Data) -> Result<(), String> {
     validate_settings(&data.settings)?;
@@ -463,6 +504,7 @@ async fn export_backup(app: tauri::AppHandle) -> Result<Option<String>, String> 
             version: 1,
             exported_at: Local::now().timestamp_millis(),
             data: core.data.clone(),
+            task_durations: Some(core.durations.for_export(&core.data.tasks)),
         };
         std::fs::write(
             &file,
@@ -493,6 +535,9 @@ async fn import_backup(app: tauri::AppHandle, confirmed: bool) -> Result<Option<
             return Err("Desteklenmeyen yedek biçimi.".into());
         }
         validate_backup(&backup.data)?;
+        if let Some(durations) = &backup.task_durations {
+            durations.validate()?;
+        }
         let state = app.state::<AppState>();
         let core = state.0.lock().map_err(|e| e.to_string())?;
         if core.data.timer.phase != "idle" {
@@ -508,6 +553,7 @@ async fn import_backup(app: tauri::AppHandle, confirmed: bool) -> Result<Option<
                 version: 1,
                 exported_at: Local::now().timestamp_millis(),
                 data: core.data.clone(),
+                task_durations: Some(core.durations.for_export(&core.data.tasks)),
             })
             .map_err(|e| e.to_string())?,
         )
@@ -521,7 +567,7 @@ async fn import_backup(app: tauri::AppHandle, confirmed: bool) -> Result<Option<
             let _ = synchronize_services(&app, Some(&backup.data.settings), &old_settings);
             return Err("İçe aktarma sırasında sayaç başlatıldı. Önce sayacı iptal edin.".into());
         }
-        core.commit(backup.data)?;
+        core.commit_with_durations(backup.data, backup.task_durations)?;
         drop(core);
         let _ = app.emit("data-changed", ());
         Ok(Some(recovery.to_string_lossy().into()))
@@ -668,6 +714,8 @@ pub fn run() {
                 labels::Catalog::load(&dir.join("labels.json")).map_err(std::io::Error::other)?;
             let priorities = priorities::Priorities::load(&dir.join("priorities.json"))
                 .map_err(std::io::Error::other)?;
+            let durations = durations::Durations::load(&dir.join("task-durations.json"))
+                .map_err(std::io::Error::other)?;
             let service_error = synchronize_services(app.handle(), None, &data.settings).err();
             app.manage(AppState(Mutex::new(Core {
                 conn,
@@ -676,6 +724,7 @@ pub fn run() {
                 service_error,
                 labels,
                 priorities,
+                durations,
             })));
             let open = MenuItem::with_id(app, "open", "Odak’ı aç", true, None::<&str>)?;
             let quick = MenuItem::with_id(app, "quick", "Hızlı görev ekle", true, None::<&str>)?;
@@ -748,6 +797,65 @@ pub fn run() {
 mod backup_tests {
     use super::*;
     #[test]
+    fn duration_preference_edit_preserves_work_timer_and_rolls_back_on_database_failure() {
+        let dir = std::env::temp_dir().join(format!("odak-commit-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("odak.sqlite3");
+        let conn = storage::open(&path).unwrap();
+        let mut data = Data::default();
+        data.timer.begin(None, "work", 45, 1000);
+        let mut core = Core {
+            conn,
+            data,
+            path,
+            service_error: None,
+            labels: labels::Catalog::default(),
+            priorities: priorities::Priorities::default(),
+            durations: durations::Durations::default(),
+        };
+        core.commit(core.data.clone()).unwrap();
+        let before = serde_json::to_value(&core.data).unwrap();
+        let mut durations = durations::Durations::default();
+        durations.0.insert("task".into(), 30);
+        core.commit_with_durations(core.data.clone(), Some(durations.clone()))
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(storage::load(&core.conn).unwrap()).unwrap(),
+            before
+        );
+        core.conn.execute_batch("PRAGMA query_only=ON").unwrap();
+        let mut failed = durations.clone();
+        failed.0.insert("task".into(), 20);
+        assert!(core
+            .commit_with_durations(core.data.clone(), Some(failed))
+            .is_err());
+        assert_eq!(core.durations.0["task"], 30);
+        assert_eq!(
+            durations::Durations::load(&dir.join("task-durations.json"))
+                .unwrap()
+                .0["task"],
+            30
+        );
+        assert_eq!(serde_json::to_value(&core.data).unwrap(), before);
+        drop(core);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn duration_backup_roundtrip_and_legacy_backup_compatibility() {
+        let legacy =
+            json!({"format":"odak-backup","version":1,"exportedAt":1,"data":Data::default()});
+        assert!(serde_json::from_value::<Backup>(legacy.clone())
+            .unwrap()
+            .task_durations
+            .is_none());
+        let mut current = legacy;
+        current["taskDurations"] = json!({"new-task":30});
+        let backup: Backup = serde_json::from_value(current).unwrap();
+        let bytes = serde_json::to_vec(&backup).unwrap();
+        let restored: Backup = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored.task_durations.unwrap().0["new-task"], 30);
+    }
+    #[test]
     fn json_backup_roundtrip_keeps_timer_sessions_and_settings() {
         let mut d = Data::default();
         d.timer.begin(None, "work", 45, 1000);
@@ -758,6 +866,7 @@ mod backup_tests {
             version: 1,
             exported_at: 10,
             data: d,
+            task_durations: None,
         })
         .unwrap();
         let decoded: Backup = serde_json::from_slice(&bytes).unwrap();

@@ -31,3 +31,10 @@
 - Recurrence instances inherit the series priority until explicitly rated; default task ordering remains unchanged unless the user selects priority sorting.
 - Drive ZIP backups include both labels.json and priorities.json when present; JSON database import/export keeps its existing schema.
 - v1.3.1 gives timer cancellation a red outlined button with theme-aware text and focus states; its confirmation and timer logic remain unchanged, and packaging never restarts an active installed timer.
+- v1.4.0 keeps the task dropdown visible throughout work, pause and break; it is locked during an active phase and allows selecting the next task when the break ends.
+- New tasks, including quick-add tasks, require a whole Pomodoro duration of 1–90 minutes, initially filled from the user's default work duration.
+- Task-row Play uses the saved task duration; the timer picker loads that duration and retains a freely editable one-session override before starting.
+- Task durations live in a separate task-durations.json file; no existing task, session, timer or SQLite schema is migrated or backfilled, and legacy tasks use the existing default duration.
+- Recurrence instances inherit the series duration unless explicitly changed; changing a duration affects future sessions and preserves the running timer's timestamps and planned duration.
+- JSON backups include optional taskDurations metadata and still accept old backups; Drive ZIPs also include task-durations.json, and the installed host helper is updated without changing credentials or schedules.
+- v1.4.0 is packaged and published without quitting, replacing or relaunching the installed app so the current focus session remains uninterrupted.

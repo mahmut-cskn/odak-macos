@@ -12,7 +12,28 @@ import {
   tasksForDay,
   validateTask,
   type Session,
+  taskPomodoroMin,
+  validatePomodoroMin,
 } from "../src/domain";
+describe("task Pomodoro duration", () => {
+  it("requires a whole duration within 1–90 and keeps total estimates separate", () => {
+    for (const invalid of ["", 0, 91, 1.5])
+      expect(validatePomodoroMin(invalid)).toBeTruthy();
+    for (const valid of [1, 30, 90])
+      expect(validatePomodoroMin(valid)).toBeNull();
+    const task = newTask();
+    task.estimateMin = 480;
+    expect(taskPomodoroMin(task, {}, 45)).toBe(45);
+    expect(taskPomodoroMin(task, { [task.id]: 30 }, 45)).toBe(30);
+    expect(task.estimateMin).toBe(480);
+  });
+  it("inherits series durations with an explicit instance override", () => {
+    const task = newTask();
+    task.seriesId = "series";
+    expect(taskPomodoroMin(task, { series: 30 }, 45)).toBe(30);
+    expect(taskPomodoroMin(task, { series: 30, [task.id]: 20 }, 45)).toBe(20);
+  });
+});
 describe("task rules", () => {
   it("allows undated and unlimited tasks", () => {
     const t = newTask();

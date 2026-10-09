@@ -63,6 +63,7 @@ async function setup(page: Page) {
     const catalog: { name: string; color: string }[] = [];
     const hidden = new Set<string>();
     const priorities: Record<string, number> = {};
+    const taskDurations: Record<string, number> = {};
     const calls: { cmd: string; args: any }[] = [];
     const snapshot = () => ({
       labels: [
@@ -74,6 +75,7 @@ async function setup(page: Page) {
         ]).values(),
       ].filter((l: any) => !hidden.has(l.name)),
       priorities: { ...priorities },
+      taskDurations: { ...taskDurations },
       data: structuredClone(data),
       remainingMs:
         data.timer.phase === "idle" ? 0 : data.timer.plannedMin * 60000,
@@ -109,8 +111,17 @@ async function setup(page: Page) {
         switch (args.action) {
           case "save_task": {
             const i = data.tasks.findIndex((t: any) => t.id === p.id);
-            if (i === -1) data.tasks.push(p);
-            else data.tasks[i] = p;
+            const { pomodoroMin, ...task } = p;
+            if (
+              (i === -1 || pomodoroMin !== undefined) &&
+              (!Number.isInteger(pomodoroMin) ||
+                pomodoroMin < 1 ||
+                pomodoroMin > 90)
+            )
+              throw new Error("Pomodoro süresi zorunlu.");
+            if (pomodoroMin !== undefined) taskDurations[p.id] = pomodoroMin;
+            if (i === -1) data.tasks.push(task);
+            else data.tasks[i] = task;
             break;
           }
           case "set_priority":
@@ -206,8 +217,9 @@ test("manual complete and restore retain the original day", async ({
 test("timer supports bounds, task start, pause, resume and cancellation", async ({
   page,
 }) => {
+  await page.getByLabel("Odaklanılacak görev").selectOption("report");
   await page.getByLabel("Çalışma süresi", { exact: true }).fill("91");
-  await page.getByLabel("Rapor yaz: başlat").click();
+  await page.getByRole("button", { name: "Odaklanmaya başla" }).click();
   await expect(page.getByRole("alert")).toContainText("1–90");
   await page.getByLabel("Çalışma süresi", { exact: true }).fill("45");
   await page.getByLabel("Rapor yaz: başlat").click();
@@ -700,4 +712,167 @@ test("recurring task labels use prominent badges and series priority is selectab
     (window as any).odakTestApi.invoke("snapshot"),
   );
   expect(state.priorities.series).toBe(5);
+});
+
+test("requires a task Pomodoro duration and row start uses 30 minutes independently of total estimate", async ({
+  page,
+}) => {
+  const before: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  await page.getByRole("button", { name: "Yeni görev", exact: true }).click();
+  await page.getByLabel("Başlık", { exact: true }).fill("Otuz dakikalık iş");
+  const duration = page.getByLabel("Pomodoro süresi", { exact: true });
+  await expect(duration).toHaveAttribute("required", "");
+  await expect(duration).toHaveClass("required-field");
+  for (const invalid of ["", "0", "91", "1.5"]) {
+    await duration.fill(invalid);
+    expect(
+      await duration.evaluate((input: HTMLInputElement) =>
+        input.checkValidity(),
+      ),
+    ).toBe(false);
+    await page.getByRole("button", { name: "Kaydet", exact: true }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    expect(
+      await page.evaluate(() => (window as any).odakFixture.tasks.length),
+    ).toBe(3);
+  }
+  await duration.fill("30");
+  await page.getByLabel("Tahmini süre", { exact: true }).fill("120");
+  await page.locator(".modal").evaluate((element) => { element.scrollTop = 0; });
+  await page.screenshot({
+    path: "docs/screenshot-task-duration.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Kaydet", exact: true }).click();
+  await expect(page.getByLabel("Çalışma süresi", { exact: true })).toHaveValue(
+    "30",
+  );
+  await page.getByLabel("Çalışma süresi", { exact: true }).fill("45");
+  await page.getByLabel("Otuz dakikalık iş: başlat").click();
+  await expect(page.locator(".timer-number")).toHaveText("30:00");
+  const state: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  const task = state.data.tasks.find(
+    (t: any) => t.title === "Otuz dakikalık iş",
+  );
+  expect(state.taskDurations[task.id]).toBe(30);
+  expect(task.estimateMin).toBe(120);
+  expect(task.pomodoroMin).toBeUndefined();
+  expect(state.data.tasks.filter((t: any) => t.id !== task.id)).toEqual(
+    before.data.tasks,
+  );
+  expect(state.data.timer.plannedMin).toBe(30);
+  expect(state.data.sessions).toEqual(before.data.sessions);
+  await expect(page.getByLabel("Odaklanılacak görev")).toBeVisible();
+  await expect(page.getByLabel("Odaklanılacak görev")).toBeDisabled();
+  await page
+    .locator(".timer-card")
+    .screenshot({ path: "docs/screenshot-focus-duration.png" });
+});
+
+test("task dropdown remains visible during work and pause and switches the next task after break", async ({
+  page,
+}) => {
+  const picker = page.getByLabel("Odaklanılacak görev");
+  await expect(picker).toBeVisible();
+  await picker.selectOption("report");
+  await page.getByRole("button", { name: "Odaklanmaya başla" }).click();
+  await expect(picker).toBeVisible();
+  await expect(picker).toBeDisabled();
+  await expect(picker).toHaveValue("report");
+  await page.getByRole("button", { name: "Duraklat", exact: true }).click();
+  await expect(picker).toBeVisible();
+  await expect(picker).toBeDisabled();
+  await page.evaluate(async () => {
+    const fixture = (window as any).odakFixture;
+    await (window as any).odakTestApi.invoke("command", {
+      action: "save_task",
+      payload: {
+        ...fixture.tasks[0],
+        id: "next-task",
+        title: "Sıradaki iş",
+        pomodoroMin: 30,
+      },
+    });
+    Object.assign(fixture.timer, {
+      phase: "idle",
+      pausedPhase: null,
+      startedAt: null,
+      pausedAt: null,
+      breakReady: true,
+    });
+    (window as any).odakNotify();
+  });
+  await expect(page.getByText("MOLA BİTTİ", { exact: true })).toBeVisible();
+  await expect(picker).toBeEnabled();
+  await picker.selectOption("next-task");
+  await expect(page.getByLabel("Çalışma süresi", { exact: true })).toHaveValue(
+    "30",
+  );
+  await page.getByRole("button", { name: "Devam et", exact: true }).click();
+  const state: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(state.data.timer.taskId).toBe("next-task");
+  expect(state.data.timer.plannedMin).toBe(30);
+  expect(state.data.sessions).toEqual([]);
+});
+
+test("editing a task duration preserves a running timer and all existing task fields", async ({
+  page,
+}) => {
+  await page.getByLabel("Rapor yaz: başlat").click();
+  const before: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  await page.getByRole("button", { name: "Rapor yaz", exact: true }).click();
+  await page.getByLabel("Pomodoro süresi", { exact: true }).fill("30");
+  await page.getByRole("button", { name: "Kaydet", exact: true }).click();
+  const after: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(after.data).toEqual(before.data);
+  expect(after.taskDurations.report).toBe(30);
+  await expect(page.locator(".timer-number")).toHaveText("45:00");
+  await expect(page.getByLabel("Çalışma süresi", { exact: true })).toHaveValue(
+    "45",
+  );
+  await page.getByRole("button", { name: "İptal et", exact: true }).click();
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Evet, onayla" })
+    .click();
+  await page.getByLabel("Rapor yaz: başlat").click();
+  await expect(page.locator(".timer-number")).toHaveText("30:00");
+});
+
+test("quick add also requires a Pomodoro duration", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: "quick" } },
+      invoke: async () => null,
+    };
+  });
+  await page.goto("/?quick=1");
+  await page.getByLabel("Görev başlığı").fill("Hızlı otuz dakika");
+  const duration = page.getByLabel("Pomodoro süresi", { exact: true });
+  await duration.fill("");
+  await page.getByRole("button", { name: "Ekle", exact: true }).click();
+  expect(
+    await page.evaluate(() => (window as any).odakFixture.tasks.length),
+  ).toBe(3);
+  await duration.fill("30");
+  await page.getByRole("button", { name: "Ekle", exact: true }).click();
+  await expect(page.getByLabel("Görev başlığı")).toHaveValue("");
+  const state: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  const task = state.data.tasks.find(
+    (t: any) => t.title === "Hızlı otuz dakika",
+  );
+  expect(task.scheduledDate).toBeNull();
+  expect(state.taskDurations[task.id]).toBe(30);
 });

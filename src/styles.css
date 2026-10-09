@@ -958,10 +958,21 @@ kbd {
 .quick-window form {
   display: flex;
   gap: 10px;
+  align-items: flex-end;
 }
 .quick-window form input {
   flex: 1;
   font-size: 13px;
+}
+.quick-duration {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.quick-window .quick-duration input {
+  width: 75px;
 }
 .quick-window small {
   display: block;

@@ -8,7 +8,7 @@ Bu özellik Odak uygulamasının dışında, bu Mac’te çalışan ayrı bir ya
 - Drive hedefi: bu yardımcıya ait **Odak** klasörü. Obsidian yedekleri değiştirilmez.
 - Yerel kopyalar, durum ve ayrı yenilenen Drive izni: `~/Library/Application Support/Odak Backup/`.
 - LaunchAgent: `~/Library/LaunchAgents/com.mahmutcskn.odak-backup.plist`.
-- ZIP içerikleri: `odak.sqlite3`, `odak-yedek.json`, varsa `labels.json` ve `priorities.json`, geri yükleme açıklaması.
+- ZIP içerikleri: `odak.sqlite3`, `odak-yedek.json`, varsa `labels.json`, `priorities.json` ve `task-durations.json`, geri yükleme açıklaması. Görev pomodoro süreleri JSON yedeğinde de bulunur.
 - Kaynak SQLite salt okunur açılır; Online Backup API, WAL’daki son kayıtları da tutarlı kopyaya dahil eder. Çalışan uygulama, sayaç ve görevler değişmez. Eski yedekler silinmez.
 - İnternet hatasında yerel ZIP korunur; başarı kaydı yazılmaz ve sonraki kontrol yeniden dener.
 - Python ortamı mevcut Obsidian yedekleme projesinden kullanılır. Bu projenin klasörünü/ortamını taşırsan yardımcının kurulumunu yeni yol ile tekrarla.
@@ -35,7 +35,7 @@ Yalnızca yerel kopya oluşturmak için aynı komuta `--local-only` ekle; bu Goo
 
 ## Geri yükleme
 
-Drive’daki Odak klasöründen istediğin ZIP’i indir ve aç. Odak’ın sayacı çalışmıyorken **Ayarlar → JSON içe aktar** ile onay verip `odak-yedek.json` seç. Mevcut verilerin yerini değiştirmeden önce Odak otomatik kurtarma JSON’u oluşturur. Etiket seçim listesi ayrı `labels.json`, yıldız öncelikleri `priorities.json` içindedir; bu tercih dosyalarını uygulama kapalıyken app-data klasörüne koyabilirsin. Alternatif SQLite dosyasını çalışan uygulamanın üzerine kopyalama.
+Drive’daki Odak klasöründen istediğin ZIP’i indir ve aç. Odak’ın sayacı çalışmıyorken **Ayarlar → JSON içe aktar** ile onay verip `odak-yedek.json` seç. Mevcut verilerin yerini değiştirmeden önce Odak otomatik kurtarma JSON’u oluşturur. v1.4.0 görev pomodoro sürelerini JSON’dan geri yükler; eski JSON’larda süre alanı yoksa mevcut tercihler korunur. Etiket seçim listesi ayrı `labels.json`, yıldız öncelikleri `priorities.json` içindedir; bu tercih dosyalarını uygulama kapalıyken app-data klasörüne koyabilirsin. SQLite ile geri yüklemede `task-durations.json` da süre tercihlerini taşır. Alternatif SQLite dosyasını çalışan uygulamanın üzerine kopyalama.
 
 ## Kontrol ve durdurma
 
