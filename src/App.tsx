@@ -65,11 +65,14 @@ type Confirmation = {
   title: string;
   message: string;
   action: () => Promise<boolean> | boolean;
+  confirmLabel?: string;
+  positive?: boolean;
 };
 type ConfirmRequest = (
   title: string,
   message: string,
   action: Confirmation["action"],
+  options?: Pick<Confirmation, "confirmLabel" | "positive">,
 ) => void;
 type Tab = "today" | "list" | "calendar" | "completed" | "stats" | "settings";
 const weekdays = ["Paz", "Pzt", "Sal", "Çar", "Per", "Cum", "Cmt"];
@@ -97,11 +100,17 @@ export default function App() {
     [quickTitle, setQuickTitle] = useState("");
   const [focusTaskId, setFocusTaskId] = useState("");
   const [quickWork, setQuickWork] = useState<number | string>(45);
+  const [quickLabel, setQuickLabel] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [prioritySort, setPrioritySort] = useState(false);
-  const requestDelete: ConfirmRequest = (title, message, action) => {
+  const requestDelete: ConfirmRequest = (
+    title,
+    message,
+    action,
+    options = {},
+  ) => {
     setError("");
-    setConfirmation({ title, message, action });
+    setConfirmation({ title, message, action, ...options });
   };
   const quickRef = useRef<HTMLInputElement>(null);
   const apply = useCallback((s: Snapshot) => {
@@ -144,6 +153,7 @@ export default function App() {
     ).then((fn) => (active ? cleanups.push(fn) : fn()));
     subscribe("quick-open", () => {
       setQuickTitle("");
+      setQuickLabel("");
       setTimeout(() => quickRef.current?.focus(), 50);
     }).then((fn) => (active ? cleanups.push(fn) : fn()));
     return () => {
@@ -224,49 +234,76 @@ export default function App() {
             e.preventDefault();
             const t = newTask();
             t.title = quickTitle;
-            const validation = validatePomodoroMin(quickWork);
+            t.label = quickLabel.trim();
+            const validation =
+              validatePomodoroMin(quickWork) || validateTask(t, true);
             if (validation) {
               setError(validation);
               return;
             }
             if (await run("save_task", { ...t, pomodoroMin: quickWork })) {
               setQuickTitle("");
+              setQuickLabel("");
               setQuickWork(snapshot?.data.settings.defaultWorkMin || 45);
               await hideQuick();
             }
           }}
         >
-          <input
-            ref={quickRef}
-            autoFocus
-            placeholder="Aklındaki işi yaz…"
-            aria-label="Görev başlığı"
-            required
-            maxLength={250}
-            value={quickTitle}
-            onChange={(e) => setQuickTitle(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") hideQuick();
-            }}
-          />
-          <label className="quick-duration">
-            Pomodoro · dk
+          <div className="quick-task-fields">
             <input
-              aria-label="Pomodoro süresi"
-              type="number"
+              ref={quickRef}
+              autoFocus
+              placeholder="Aklındaki işi yaz…"
+              aria-label="Görev başlığı"
               required
-              min="1"
-              max="90"
-              step="1"
-              className="required-field"
-              value={quickWork}
-              onChange={(e) =>
-                setQuickWork(
-                  e.target.value === "" ? "" : Number(e.target.value),
-                )
-              }
+              maxLength={250}
+              value={quickTitle}
+              onChange={(e) => setQuickTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") hideQuick();
+              }}
             />
-          </label>
+            <div className="quick-options">
+              <label className="quick-duration quick-label">
+                Etiket · zorunlu
+                <input
+                  aria-label="Etiket"
+                  list="quick-labels"
+                  required
+                  className="required-field"
+                  placeholder="İş, okul, kişisel…"
+                  value={quickLabel}
+                  onChange={(e) => {
+                    setQuickLabel(e.target.value);
+                    setError("");
+                  }}
+                />
+                <datalist id="quick-labels">
+                  {snapshot?.labels?.map((label) => (
+                    <option key={label.name} value={label.name} />
+                  ))}
+                </datalist>
+              </label>
+              <label className="quick-duration">
+                Pomodoro · dk
+                <input
+                  aria-label="Pomodoro süresi"
+                  type="number"
+                  required
+                  min="1"
+                  max="90"
+                  step="1"
+                  className="required-field"
+                  value={quickWork}
+                  onChange={(e) =>
+                    setQuickWork(
+                      e.target.value === "" ? "" : Number(e.target.value),
+                    )
+                  }
+                />
+              </label>
+            </div>
+          </div>
           <button className="primary" disabled={busy || !quickTitle.trim()}>
             <Plus size={17} />
             Ekle
@@ -508,20 +545,53 @@ export default function App() {
                           )}{" "}
                           {timer.phase === "paused" ? "Devam et" : "Duraklat"}
                         </button>
-                        <button
-                          className="cancel-btn"
-                          disabled={busy}
-                          onClick={() =>
-                            requestDelete(
-                              "Bu oturumu iptal etmek istiyor musun?",
-                              "Şu anki oturum silinecek ve bu oturum için süre yazılmayacak. Önceden biten oturumlar korunur.",
-                              () => run("cancel", { confirmed: true }),
-                            )
-                          }
-                        >
-                          <X size={15} />
-                          İptal et
-                        </button>
+                        <div className="timer-secondary-actions">
+                          <button
+                            className="cancel-btn"
+                            disabled={busy}
+                            onClick={() =>
+                              requestDelete(
+                                "Bu oturumu iptal etmek istiyor musun?",
+                                "Şu anki oturum silinecek ve bu oturum için süre yazılmayacak. Önceden biten oturumlar korunur.",
+                                () => run("cancel", { confirmed: true }),
+                              )
+                            }
+                          >
+                            <X size={15} />
+                            İptal et
+                          </button>
+                          {activeTask && (
+                            <button
+                              className="finish-btn"
+                              disabled={busy}
+                              onClick={() =>
+                                requestDelete(
+                                  "Görevi bitirmek istiyor musun?",
+                                  timer.phase === "break" ||
+                                    timer.pausedPhase === "break"
+                                    ? `“${activeTask.title}” tamamlananlara taşınır ve mola kapanır. Kaydedilmiş çalışma süresi korunur; mola odak süresine eklenmez.`
+                                    : `“${activeTask.title}” tamamlananlara taşınır. Duraklamalar hariç gerçekten çalıştığın süre kaydedilir ve istatistiklere eklenir; sayaç kapanır.`,
+                                  async () => {
+                                    const finished = await run("finish", {
+                                      taskId: timer.taskId,
+                                      startedAt: timer.startedAt,
+                                      confirmed: true,
+                                    });
+                                    if (finished) setFocusTaskId("");
+                                    return finished;
+                                  },
+                                  {
+                                    confirmLabel: "Evet, bitir",
+                                    positive: true,
+                                  },
+                                )
+                              }
+                            >
+                              <Check size={15} />
+                              Bitir
+                            </button>
+                          )}
+                        </div>
                       </>
                     ) : timer.breakReady ? (
                       <>
@@ -1137,6 +1207,8 @@ export default function App() {
         <ConfirmDialog
           title={confirmation.title}
           message={confirmation.message}
+          confirmLabel={confirmation.confirmLabel}
+          positive={confirmation.positive}
           error={error}
           onCancel={() => setConfirmation(null)}
           onConfirm={async () => {
@@ -1400,7 +1472,7 @@ function TaskEditor({
   const save = async () => {
     const message =
       validatePomodoroMin(minutes) ||
-      validateTask(task) ||
+      validateTask(task, true) ||
       validatePlanningChange(task, onDelete ? initial : undefined);
     if (message) {
       setValidation(message);
@@ -1494,10 +1566,12 @@ function TaskEditor({
           </div>
           <div className="field-grid">
             <label className="field">
-              Etiket
+              Etiket <span>Zorunlu</span>
               <input
                 list="labels"
                 aria-label="Etiket"
+                required
+                className="required-field"
                 placeholder="İş, okul, kişisel…"
                 value={task.label}
                 onChange={(e) => {
@@ -2466,12 +2540,16 @@ function ConfirmDialog({
   error,
   onCancel,
   onConfirm,
+  confirmLabel = "Evet, onayla",
+  positive = false,
 }: {
   title: string;
   message: string;
   error: string;
   onCancel: () => void;
   onConfirm: () => Promise<void>;
+  confirmLabel?: string;
+  positive?: boolean;
 }) {
   const [pending, setPending] = useState(false);
   const dialog = useRef<HTMLElement>(null);
@@ -2537,7 +2615,7 @@ function ConfirmDialog({
             Vazgeç
           </button>
           <button
-            className="danger-confirm"
+            className={positive ? "positive-confirm" : "danger-confirm"}
             disabled={pending}
             onClick={async () => {
               setPending(true);
@@ -2548,7 +2626,7 @@ function ConfirmDialog({
               }
             }}
           >
-            {pending ? "İşleniyor…" : "Evet, onayla"}
+            {pending ? "İşleniyor…" : confirmLabel}
           </button>
         </div>
       </section>

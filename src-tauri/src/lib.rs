@@ -134,10 +134,12 @@ fn execute(
     action: String,
     payload: Value,
 ) -> Result<Snapshot, String> {
-    if matches!(action.as_str(), "delete_task" | "delete_label" | "cancel")
-        && payload["confirmed"].as_bool() != Some(true)
+    if matches!(
+        action.as_str(),
+        "delete_task" | "delete_label" | "cancel" | "finish"
+    ) && payload["confirmed"].as_bool() != Some(true)
     {
-        return Err("Silme işlemi için önce onay verin.".into());
+        return Err("Bu işlem için önce onay verin.".into());
     }
     // OS services may marshal onto the main thread; never hold the database lock here.
     let incoming_settings = if action == "settings" {
@@ -157,6 +159,25 @@ fn execute(
         None
     };
     let mut core = state.0.lock().map_err(|e| e.to_string())?;
+    if action == "finish" {
+        let task_id = payload["taskId"].as_str().ok_or("Görev bulunamadı.")?;
+        let stamp = payload.get("startedAt").ok_or("Oturum başlangıcı eksik.")?;
+        if !stamp.is_null() && stamp.as_i64().is_none() {
+            return Err("Oturum başlangıcı geçersiz.".into());
+        }
+        let mut next = core.data.clone();
+        finish_task_session(
+            &mut next,
+            task_id,
+            stamp.as_i64(),
+            Local::now().timestamp_millis(),
+        )?;
+        core.commit(next)?;
+        let snapshot = core.snapshot();
+        drop(core);
+        let _ = app.emit("data-changed", ());
+        return Ok(snapshot);
+    }
     if action == "set_priority" {
         let id = payload["id"].as_str().ok_or("Görev bulunamadı.")?;
         if !core.data.tasks.iter().any(|t| t.id == id) {
@@ -224,6 +245,8 @@ fn execute(
                 pending_durations = Some(durations);
             }
             task.title = task.title.trim().into();
+            let previous = next.tasks.iter().find(|old| old.id == task.id);
+            validate_label_change(&task, previous)?;
             validate_task(&task)?;
             validate_planning_change(
                 &task,
@@ -796,6 +819,33 @@ pub fn run() {
 #[cfg(test)]
 mod backup_tests {
     use super::*;
+    #[test]
+    fn early_finished_work_survives_sqlite_and_json_backup_validation() {
+        let mut data = Data::default();
+        data.tasks.push(serde_json::from_value(json!({"id":"early","title":"Task","label":"İş","color":"#438470","notes":"Preserve","status":"active","completedAt":null,"estimateMin":120,"scheduledDate":null,"startAt":null,"endAt":null,"dueAt":null,"recurrenceRule":null,"seriesId":null,"subtasks":[],"createdAt":0})).unwrap());
+        data.timer.begin(Some("early".into()), "work", 45, 0);
+        finish_task_session(&mut data, "early", Some(0), 750000).unwrap();
+        validate_backup(&data).unwrap();
+        let mut conn = storage::open(std::path::Path::new(":memory:")).unwrap();
+        storage::save(&mut conn, &data).unwrap();
+        let restored = storage::load(&conn).unwrap();
+        assert_eq!(restored.tasks[0].status, "completed");
+        assert_eq!(restored.tasks[0].notes, "Preserve");
+        assert_eq!(restored.tasks[0].estimate_min, Some(120));
+        assert_eq!(restored.sessions[0].actual_min, 12.5);
+        assert_eq!(restored.timer.phase, "idle");
+        let backup = Backup {
+            format: "odak-backup".into(),
+            version: 1,
+            exported_at: 750000,
+            data: restored,
+            task_durations: None,
+        };
+        let decoded: Backup =
+            serde_json::from_slice(&serde_json::to_vec(&backup).unwrap()).unwrap();
+        validate_backup(&decoded.data).unwrap();
+        assert_eq!(decoded.data.sessions[0].actual_min, 12.5);
+    }
     #[test]
     fn duration_preference_edit_preserves_work_timer_and_rolls_back_on_database_failure() {
         let dir = std::env::temp_dir().join(format!("odak-commit-test-{}", uuid::Uuid::new_v4()));

@@ -35,6 +35,16 @@ describe("task Pomodoro duration", () => {
   });
 });
 describe("task rules", () => {
+  it("requires labels for form submission without rejecting historical blank-label records", () => {
+    const t = newTask();
+    t.title = "Legacy";
+    expect(validateTask(t)).toBeNull();
+    expect(validateTask(t, true)).toContain("Etiket zorunlu");
+    t.label = "   ";
+    expect(validateTask(t, true)).toContain("Etiket zorunlu");
+    t.label = "İş";
+    expect(validateTask(t, true)).toBeNull();
+  });
   it("allows undated and unlimited tasks", () => {
     const t = newTask();
     t.title = "Rapor";
@@ -93,6 +103,17 @@ describe("completed session accounting", () => {
         session("break", "2026-10-08", 15),
       ]),
     ).toBe(45);
+  });
+  it("counts actual early-finish time in totals, labels and the line graph", async () => {
+    const { dailyTrend } = await import("../src/domain");
+    const early = { ...session("work", "2026-10-08", 45), actualMin: 12.5 };
+    const sessions = [early, session("break", "2026-10-08", 15)];
+    expect(spent("a", sessions)).toBe(12.5);
+    const summary = stats(sessions, "2026-10-08");
+    expect(summary.daily).toBe(12.5);
+    expect(summary.weekly).toBe(12.5);
+    expect(summary.labels["İş"]).toBe(12.5);
+    expect(dailyTrend(sessions, "2026-10-08").at(-1)?.minutes).toBe(12.5);
   });
   it("uses Monday-based local calendar weeks and excludes future sessions", () => {
     const s = stats(

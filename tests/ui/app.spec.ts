@@ -104,7 +104,9 @@ async function setup(page: Page) {
         if (cmd === "import_backup") return "/tmp/recovery.json";
         const p = args.payload;
         if (
-          ["delete_task", "delete_label", "cancel"].includes(args.action) &&
+          ["delete_task", "delete_label", "cancel", "finish"].includes(
+            args.action,
+          ) &&
           !p.confirmed
         )
           throw new Error("Onay gerekli.");
@@ -112,6 +114,11 @@ async function setup(page: Page) {
           case "save_task": {
             const i = data.tasks.findIndex((t: any) => t.id === p.id);
             const { pomodoroMin, ...task } = p;
+            if (
+              (i === -1 || task.label !== data.tasks[i].label) &&
+              !task.label.trim()
+            )
+              throw new Error("Etiket zorunlu.");
             if (
               (i === -1 || pomodoroMin !== undefined) &&
               (!Number.isInteger(pomodoroMin) ||
@@ -153,16 +160,60 @@ async function setup(page: Page) {
               ...p,
               phase: "work",
               plannedMin: p.workMin,
-              startedAt: Date.now(),
+              startedAt: Date.now() - ((window as any).odakStartOffset || 0),
             };
             break;
           case "pause":
             data.timer.pausedPhase = data.timer.phase;
             data.timer.phase = "paused";
+            data.timer.pausedAt = Date.now();
             break;
           case "resume":
+            data.timer.pausedAccumulatedMs += Date.now() - data.timer.pausedAt;
+            data.timer.pausedAt = null;
             data.timer.phase = data.timer.pausedPhase;
+            data.timer.pausedPhase = null;
             break;
+          case "finish": {
+            const timer = data.timer;
+            if (timer.taskId !== p.taskId || timer.startedAt !== p.startedAt)
+              throw new Error("Oturum değişti.");
+            const now = Date.now();
+            const task = data.tasks.find((t: any) => t.id === p.taskId);
+            if (timer.phase === "work" || timer.pausedPhase === "work") {
+              const elapsed = Math.max(
+                0,
+                Math.min(
+                  timer.plannedMin * 60000,
+                  (timer.pausedAt ?? now) -
+                    timer.startedAt -
+                    timer.pausedAccumulatedMs,
+                ),
+              );
+              data.sessions.push({
+                id: crypto.randomUUID(),
+                taskId: p.taskId,
+                type: "work",
+                startedAt: timer.startedAt,
+                endedAt: now,
+                plannedMin: timer.plannedMin,
+                actualMin: elapsed / 60000,
+                label: task.label,
+              });
+            }
+            task.status = "completed";
+            task.completedAt = now;
+            Object.assign(timer, {
+              phase: "idle",
+              taskId: null,
+              startedAt: null,
+              pausedAt: null,
+              pausedPhase: null,
+              pausedAccumulatedMs: 0,
+              breakReady: false,
+            });
+            break;
+          }
           case "cancel":
             data.timer.phase = "idle";
             data.timer.taskId = null;
@@ -189,6 +240,7 @@ test("creates an undated task and moves it to today", async ({ page }) => {
     .click();
   await page.getByRole("button", { name: "Yeni görev", exact: true }).click();
   await page.getByLabel("Başlık", { exact: true }).fill("API tasarımı");
+  await page.getByLabel("Etiket", { exact: true }).fill("İş");
   await page.getByRole("button", { name: "Kaydet", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "API tasarımı", exact: true }),
@@ -245,6 +297,7 @@ test("adds a future scheduled task from the selected calendar day", async ({
   await page.getByRole("button", { name: "Bu güne görev ekle" }).click();
   await expect(page.getByLabel("Gün", { exact: true })).toHaveValue(day!);
   await page.getByLabel("Başlık", { exact: true }).fill("Lab kurulumu");
+  await page.getByLabel("Etiket", { exact: true }).fill("Lab");
   await page.getByLabel("Başlangıç saati").fill("14:00");
   await page.getByLabel("Bitiş saati").fill("15:00");
   await page.getByRole("button", { name: "Kaydet", exact: true }).click();
@@ -341,6 +394,7 @@ test("starts a new named task through the existing New task button", async ({
     "required-field",
   );
   await page.getByLabel("Başlık", { exact: true }).fill("Yeni odak işi");
+  await page.getByLabel("Etiket", { exact: true }).fill("İş");
   await page.getByRole("button", { name: "Kaydet", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Odaklanmaya başla" }),
@@ -722,6 +776,7 @@ test("requires a task Pomodoro duration and row start uses 30 minutes independen
   );
   await page.getByRole("button", { name: "Yeni görev", exact: true }).click();
   await page.getByLabel("Başlık", { exact: true }).fill("Otuz dakikalık iş");
+  await page.getByLabel("Etiket", { exact: true }).fill("İş");
   const duration = page.getByLabel("Pomodoro süresi", { exact: true });
   await expect(duration).toHaveAttribute("required", "");
   await expect(duration).toHaveClass("required-field");
@@ -740,7 +795,9 @@ test("requires a task Pomodoro duration and row start uses 30 minutes independen
   }
   await duration.fill("30");
   await page.getByLabel("Tahmini süre", { exact: true }).fill("120");
-  await page.locator(".modal").evaluate((element) => { element.scrollTop = 0; });
+  await page.locator(".modal").evaluate((element) => {
+    element.scrollTop = 0;
+  });
   await page.screenshot({
     path: "docs/screenshot-task-duration.png",
     fullPage: true,
@@ -858,6 +915,7 @@ test("quick add also requires a Pomodoro duration", async ({ page }) => {
   });
   await page.goto("/?quick=1");
   await page.getByLabel("Görev başlığı").fill("Hızlı otuz dakika");
+  await page.getByLabel("Etiket", { exact: true }).fill("İş");
   const duration = page.getByLabel("Pomodoro süresi", { exact: true });
   await duration.fill("");
   await page.getByRole("button", { name: "Ekle", exact: true }).click();
@@ -875,4 +933,223 @@ test("quick add also requires a Pomodoro duration", async ({ page }) => {
   );
   expect(task.scheduledDate).toBeNull();
   expect(state.taskDurations[task.id]).toBe(30);
+});
+
+test("finish asks permission, records elapsed work in graphs, completes the task and allows undo", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    (window as any).odakStartOffset = 20 * 60000;
+  });
+  await page.getByLabel("Rapor yaz: başlat").click();
+  const before: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  await page.getByRole("button", { name: "Bitir", exact: true }).click();
+  await expect(page.getByRole("alertdialog")).toContainText(
+    "gerçekten çalıştığın süre",
+  );
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Vazgeç", exact: true })
+    .click();
+  const cancelled: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(cancelled.data).toEqual(before.data);
+  expect(
+    await page.evaluate(() =>
+      (window as any).odakCalls.some((c: any) => c.args?.action === "finish"),
+    ),
+  ).toBe(false);
+  await page
+    .locator(".timer-card")
+    .screenshot({ path: "docs/screenshot-finish.png" });
+  await page.getByRole("button", { name: "Bitir", exact: true }).click();
+  await page.screenshot({
+    path: "docs/screenshot-finish-confirm.png",
+    fullPage: true,
+  });
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Evet, bitir", exact: true })
+    .click();
+  const after: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(after.data.timer.phase).toBe("idle");
+  expect(after.data.sessions).toHaveLength(1);
+  expect(after.data.sessions[0].actualMin).toBeGreaterThanOrEqual(20);
+  expect(after.data.sessions[0].actualMin).toBeLessThan(20.1);
+  expect(after.data.sessions[0].plannedMin).toBe(45);
+  expect(after.data.tasks[0].status).toBe("completed");
+  await page.getByLabel("İstatistik", { exact: true }).click();
+  await expect(
+    page.getByLabel("Günlük odak çizgi grafiği", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".trend-hit").last()).toHaveAttribute(
+    "aria-label",
+    /20dk/,
+  );
+  await page.getByRole("button", { name: "Tamamlanan", exact: true }).click();
+  await expect(page.getByLabel("Rapor yaz: geri al")).toBeVisible();
+  await page.getByLabel("Rapor yaz: geri al").click();
+  const undone: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(undone.data.tasks[0].status).toBe("active");
+  expect(undone.data.tasks[0].completedAt).toBeNull();
+  expect(undone.data.sessions).toEqual(after.data.sessions);
+});
+
+test("finish from pause excludes paused time", async ({ page }) => {
+  await page.evaluate(() => {
+    (window as any).odakStartOffset = 5 * 60000;
+  });
+  await page.getByLabel("Rapor yaz: başlat").click();
+  await page.getByRole("button", { name: "Duraklat", exact: true }).click();
+  const paused: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  await page.getByRole("button", { name: "Bitir", exact: true }).click();
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Evet, bitir", exact: true })
+    .click();
+  const finished: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  const expected =
+    (paused.data.timer.pausedAt -
+      paused.data.timer.startedAt -
+      paused.data.timer.pausedAccumulatedMs) /
+    60000;
+  expect(finished.data.sessions[0].actualMin).toBe(expected);
+  expect(finished.data.tasks[0].status).toBe("completed");
+});
+
+test("break cancellation leaves the task active while Finish completes it without adding break time", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    const fixture = (window as any).odakFixture,
+      now = Date.now();
+    fixture.sessions.push({
+      id: "earned",
+      taskId: "report",
+      type: "work",
+      startedAt: now - 12 * 60000,
+      endedAt: now,
+      plannedMin: 45,
+      actualMin: 12,
+      label: "İş",
+    });
+    Object.assign(fixture.timer, {
+      phase: "break",
+      taskId: "report",
+      startedAt: now,
+      plannedMin: 15,
+    });
+    (window as any).odakNotify();
+  });
+  await expect(page.getByText("MOLA ZAMANI", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "İptal et", exact: true }).click();
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Evet, onayla", exact: true })
+    .click();
+  const cancelled: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(cancelled.data.tasks[0].status).toBe("active");
+  expect(cancelled.data.sessions).toHaveLength(1);
+  await page.evaluate(() => {
+    Object.assign((window as any).odakFixture.timer, {
+      phase: "break",
+      taskId: "report",
+      startedAt: Date.now(),
+      plannedMin: 15,
+    });
+    (window as any).odakNotify();
+  });
+  await expect(page.getByText("MOLA ZAMANI", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Bitir", exact: true }).click();
+  await expect(page.getByRole("alertdialog")).toContainText(
+    "mola odak süresine eklenmez",
+  );
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Evet, bitir", exact: true })
+    .click();
+  const finished: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(finished.data.tasks[0].status).toBe("completed");
+  expect(finished.data.sessions).toEqual(cancelled.data.sessions);
+});
+
+test("new task requires a nonblank label and typed labels remain available", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Yeni görev", exact: true }).click();
+  await page.getByLabel("Başlık", { exact: true }).fill("Etiketli yeni iş");
+  const label = page.getByLabel("Etiket", { exact: true });
+  await expect(label).toHaveAttribute("required", "");
+  await expect(label).toHaveClass("required-field");
+  await page.getByRole("button", { name: "Kaydet", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await label.fill("   ");
+  await page.getByRole("button", { name: "Kaydet", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Etiket zorunlu");
+  expect(
+    await page.evaluate(() => (window as any).odakFixture.tasks.length),
+  ).toBe(3);
+  await label.fill("Yeni kategori");
+  await page.getByRole("button", { name: "Kaydet", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Etiketli yeni iş", exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("Ayarlar", { exact: true }).click();
+  await expect(page.getByLabel("Yeni kategori: etiketi sil")).toBeVisible();
+});
+
+test("quick add requires a label and fits the small native window", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    (window as any).__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: "quick" } },
+      invoke: async () => null,
+    };
+  });
+  await page.setViewportSize({ width: 480, height: 260 });
+  await page.goto("/?quick=1");
+  await page.getByLabel("Görev başlığı").fill("Hızlı etiketli iş");
+  await page.getByRole("button", { name: "Ekle", exact: true }).click();
+  expect(
+    await page.evaluate(() => (window as any).odakFixture.tasks.length),
+  ).toBe(3);
+  await page.getByLabel("Etiket", { exact: true }).fill("   ");
+  await page.getByRole("button", { name: "Ekle", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Etiket zorunlu");
+  await page.getByLabel("Etiket", { exact: true }).fill("Ev");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.screenshot({
+    path: "docs/screenshot-quick-label.png",
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(480);
+  expect(
+    await page.evaluate(() => document.documentElement.scrollHeight),
+  ).toBeLessThanOrEqual(260);
+  await page.getByRole("button", { name: "Ekle", exact: true }).click();
+  await expect(page.getByLabel("Görev başlığı")).toHaveValue("");
+  const state: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(
+    state.data.tasks.find((t: any) => t.title === "Hızlı etiketli iş").label,
+  ).toBe("Ev");
 });

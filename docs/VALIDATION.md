@@ -103,3 +103,17 @@ Yerel entegrasyon: başka Odak süreci kapalıyken `npm run tauri build -- --deb
 - Yeni JSON süre bilgilerini taşıyor; eski JSON yedekleri okunuyor. Açık WAL veritabanı testi Drive ZIP’ine süre dosyası/JSON metadata dahil edilirken kaynak verilerin korunduğunu doğruluyor. Kurulu günlük yardımcı yeni dosyayı destekleyecek şekilde güncellendi; token ve zamanlama değiştirilmedi.
 - [Görev süresi penceresi](screenshot-task-duration.png) ve [30 dakika + görünür görev listesi](screenshot-focus-duration.png) izole örneklerle görsel olarak kontrol edildi.
 - Universal DMG hazırlandı; mimari, ad-hoc imza ve CRC doğrulaması geçti. Çalışan kurulu Odak kapatılmadı, yeniden açılmadı veya üzerine kurulmadı; kullanıcının gerçek SQLite’ına doğrudan yazılmadı. Yeni sürüm oturum bitince kurulabilir.
+
+## v1.5.0 — onaylı erken bitirme ve zorunlu etiket
+
+Yerel doğrulama: 9 Ekim 2026.
+
+- 19 TypeScript, 33 Rust, 25 Chromium UI ve 4 Python testi geçti: toplam 81. `cargo clippy --all-targets --locked -- -D warnings` temiz.
+- **Bitir** onayından vazgeçmek görev, sayaç ve oturumları değiştirmiyor. Onay, görevi tamamlıyor ve 45 dakikalık oturumda 20 dakika çalışılmışsa grafiğe yalnızca 20 dakika ekliyor. Duraklatılmış oturumda beklenen süre sayılmıyor; tamamlamayı geri almak kaydedilmiş süreyi koruyor.
+- Mola iptali görevi aktif bırakıyor; molada Bitir görevi tamamlıyor. İkisi de önceden kaydedilmiş odak süresini koruyor ve mola süresini odak olarak kaydetmiyor.
+- Onay açıkken çalışma/mola süresinin dolması çalışma kaydını iki kez üretmiyor. Eski oturuma ait onay yeni oturumu değiştirmeden reddediliyor; bitirme tekrarlandığında ek kayıt oluşmuyor.
+- Gerçek SQLite bellek veritabanı ve JSON yedek doğrulaması, erken bitirilen 12,5 dakikalık oturumun, görev notlarının ve tahmin süresinin aynen geri yüklendiğini doğruluyor.
+- Normal görev ve hızlı eklemede boş veya yalnızca boşluk içeren etiket kaydedilemiyor; yeni yazılan etiket oluşturulabiliyor. Eski etiketsiz görevler/yedekler kabul ediliyor; toplu veri dönüşümü yapılmıyor. Hızlı eklemenin tüm alanları 480×260 penceresine sığıyor.
+- [Bitir düğmesi](screenshot-finish.png), [onay penceresi](screenshot-finish-confirm.png) ve [zorunlu hızlı etiket](screenshot-quick-label.png) izole örneklerle görüntülendi.
+- Kullanıcının gerçek SQLite dosyasına doğrudan yazılmadı; kurulu Odak kapatılmadı, yeniden başlatılmadı veya üzerine kurulmadı. UI testleri izole mock verileri, native domain testleri bellek/geçici veritabanlarını kullanır.
+- Üretim TypeScript/Vite ve universal Tauri derlemesi başarılı. `lipo` x86_64 + arm64 gösteriyor; `codesign --verify --deep --strict` ve `hdiutil verify` geçti. Salt okunur bağlanan DMG'de `/Applications` kısayolu, Finder yerleşimi ve v1.5.0 uygulaması var; paket içindeki çalıştırılabilirin SHA-256 değeri derlenen kopyayla aynı. SHA-256 dosyası Release'e eklenir.

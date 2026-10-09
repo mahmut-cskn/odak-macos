@@ -261,6 +261,14 @@ pub fn validate_task(t: &Task) -> Result<(), String> {
     }
     Ok(())
 }
+pub fn validate_label_change(task: &Task, previous: Option<&Task>) -> Result<(), String> {
+    if task.label.trim().is_empty()
+        && previous.is_none_or(|old| old.label != task.label || !old.label.trim().is_empty())
+    {
+        return Err("Etiket zorunlu; bir etiket seçin veya yazın.".into());
+    }
+    Ok(())
+}
 // Rebuild only unstarted future instances when a series changes.
 pub fn prune_future_instances(data: &mut Data, series: &str, today: NaiveDate) -> Vec<NaiveDate> {
     let mut removed = vec![];
@@ -410,6 +418,69 @@ pub fn finish_due(data: &mut Data, now: i64) -> Vec<String> {
     }
     finished
 }
+/// Explicit completion credits elapsed work once, excluding pauses, then stops the timer.
+pub fn finish_task_session(
+    data: &mut Data,
+    task_id: &str,
+    expected_started_at: Option<i64>,
+    now: i64,
+) -> Result<(), String> {
+    let timer = &data.timer;
+    if timer.task_id.as_deref() != Some(task_id) || (timer.phase == "idle" && !timer.break_ready) {
+        return Err("Bitirilecek oturum değişti. Güncel oturumu kontrol edin.".into());
+    }
+    let break_phase = timer.phase == "break" || timer.paused_phase.as_deref() == Some("break");
+    let last = data.sessions.last();
+    let follows_work = break_phase
+        && last.is_some_and(|session| {
+            session.r#type == "work"
+                && session.task_id.as_deref() == Some(task_id)
+                && Some(session.started_at) == expected_started_at
+                && Some(session.ended_at) == timer.started_at
+        });
+    let follows_break = timer.phase == "idle"
+        && timer.break_ready
+        && last.is_some_and(|session| {
+            session.r#type == "break"
+                && session.task_id.as_deref() == Some(task_id)
+                && (Some(session.started_at) == expected_started_at
+                    || data.sessions.iter().rev().nth(1).is_some_and(|work| {
+                        work.r#type == "work"
+                            && work.task_id.as_deref() == Some(task_id)
+                            && Some(work.started_at) == expected_started_at
+                            && work.ended_at == session.started_at
+                    }))
+        });
+    if timer.started_at != expected_started_at && !follows_work && !follows_break {
+        return Err("Bitirilecek oturum değişti. Güncel oturumu kontrol edin.".into());
+    }
+    let task_index = data
+        .tasks
+        .iter()
+        .position(|t| t.id == task_id && t.recurrence_rule.is_none())
+        .ok_or("Görev bulunamadı.")?;
+    // A deadline may have passed while confirmation was open. Normal completion already
+    // credits full work; the following break must never credit it a second time.
+    finish_due(data, now);
+    if data.timer.phase == "work" || data.timer.paused_phase.as_deref() == Some("work") {
+        let elapsed_ms = data.timer.planned_min as i64 * 60_000 - data.timer.remaining_ms(now);
+        data.sessions.push(Session {
+            id: uuid::Uuid::new_v4().to_string(),
+            task_id: Some(task_id.into()),
+            r#type: "work".into(),
+            started_at: data.timer.started_at.unwrap_or(now),
+            ended_at: now,
+            planned_min: data.timer.planned_min,
+            actual_min: elapsed_ms as f64 / 60_000.0,
+            label: data.tasks[task_index].label.clone(),
+        });
+    }
+    let task = &mut data.tasks[task_index];
+    task.status = "completed".into();
+    task.completed_at = Some(task.completed_at.unwrap_or(now));
+    data.timer.cancel();
+    Ok(())
+}
 pub fn reminder_horizon(data: &mut Data, now: DateTime<Local>) -> bool {
     let mut changed = false;
     for offset in 0..=2 {
@@ -491,6 +562,99 @@ mod tests {
     use super::*;
     fn task() -> Task {
         serde_json::from_value(serde_json::json!({"id":"task","title":"Task","label":"İş","color":"#438470","notes":"","status":"active","completedAt":null,"estimateMin":null,"scheduledDate":"2026-10-01","startAt":null,"endAt":null,"dueAt":null,"recurrenceRule":null,"seriesId":null,"subtasks":[],"createdAt":0})).unwrap()
+    }
+    #[test]
+    fn early_finish_records_elapsed_work_completes_task_and_is_not_repeatable() {
+        let mut data = Data::default();
+        data.tasks.push(task());
+        data.timer.begin(Some("task".into()), "work", 45, 1000);
+        finish_task_session(&mut data, "task", Some(1000), 15 * 60000 + 1000).unwrap();
+        assert_eq!(data.tasks[0].status, "completed");
+        assert_eq!(data.tasks[0].completed_at, Some(901000));
+        assert_eq!(data.sessions.len(), 1);
+        assert_eq!(data.sessions[0].actual_min, 15.0);
+        assert_eq!(data.sessions[0].planned_min, 45);
+        assert_eq!(data.sessions[0].label, "İş");
+        assert_eq!(data.timer.phase, "idle");
+        assert!(!data.timer.break_ready);
+        let saved = serde_json::to_value(&data).unwrap();
+        assert!(finish_task_session(&mut data, "task", Some(1000), 1000000).is_err());
+        assert_eq!(serde_json::to_value(&data).unwrap(), saved);
+    }
+    #[test]
+    fn early_finish_excludes_current_and_previous_pauses() {
+        let mut data = Data::default();
+        data.tasks.push(task());
+        data.timer.begin(Some("task".into()), "work", 45, 0);
+        data.timer.pause(5 * 60000).unwrap();
+        data.timer.resume(15 * 60000).unwrap();
+        data.timer.pause(20 * 60000).unwrap();
+        finish_task_session(&mut data, "task", Some(0), 40 * 60000).unwrap();
+        assert_eq!(data.sessions[0].actual_min, 10.0);
+        assert_eq!(data.sessions[0].ended_at, 40 * 60000);
+    }
+    #[test]
+    fn break_cancel_keeps_task_active_but_explicit_finish_completes_without_extra_work() {
+        let mut data = Data::default();
+        data.tasks.push(task());
+        data.timer.begin(Some("task".into()), "work", 1, 0);
+        finish_due(&mut data, 60000);
+        let mut cancelled = data.clone();
+        cancelled.timer.cancel();
+        assert_eq!(cancelled.tasks[0].status, "active");
+        assert_eq!(cancelled.sessions.len(), 1);
+        finish_task_session(&mut data, "task", Some(60000), 90000).unwrap();
+        assert_eq!(data.tasks[0].status, "completed");
+        assert_eq!(data.sessions.len(), 1);
+        assert_eq!(data.sessions[0].actual_min, 1.0);
+        assert_eq!(data.timer.phase, "idle");
+    }
+    #[test]
+    fn finish_confirmation_crossing_deadlines_never_double_credits_work() {
+        for tick_before in [false, true] {
+            let mut data = Data::default();
+            data.tasks.push(task());
+            data.timer.break_min = 1;
+            data.timer.begin(Some("task".into()), "work", 1, 0);
+            if tick_before {
+                finish_due(&mut data, 120000);
+            }
+            finish_task_session(&mut data, "task", Some(0), 120000).unwrap();
+            assert_eq!(data.tasks[0].status, "completed");
+            assert_eq!(
+                data.sessions.iter().filter(|s| s.r#type == "work").count(),
+                1
+            );
+            assert_eq!(
+                data.sessions
+                    .iter()
+                    .filter(|s| s.r#type == "work")
+                    .map(|s| s.actual_min)
+                    .sum::<f64>(),
+                1.0
+            );
+        }
+    }
+    #[test]
+    fn stale_finish_rejects_a_replacement_session_without_changing_data() {
+        let mut data = Data::default();
+        data.tasks.push(task());
+        data.timer.begin(Some("task".into()), "work", 45, 1000);
+        let saved = serde_json::to_value(&data).unwrap();
+        assert!(finish_task_session(&mut data, "task", Some(0), 2000).is_err());
+        assert_eq!(serde_json::to_value(&data).unwrap(), saved);
+    }
+    #[test]
+    fn new_labels_are_required_while_unchanged_legacy_blank_labels_remain_valid() {
+        let mut old = task();
+        old.label.clear();
+        assert!(validate_task(&old).is_ok());
+        assert!(validate_label_change(&old, None).is_err());
+        assert!(validate_label_change(&old, Some(&old)).is_ok());
+        let mut cleared = task();
+        cleared.label = "  ".into();
+        assert!(validate_label_change(&cleared, Some(&task())).is_err());
+        assert!(validate_label_change(&task(), None).is_ok());
     }
     #[test]
     fn past_planning_is_blocked_without_rewriting_existing_history() {

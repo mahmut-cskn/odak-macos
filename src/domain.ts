@@ -176,8 +176,10 @@ export function stats(sessions: Session[], today = dayKey()) {
   }
   return { daily, weekly, labels, days, weekStart };
 }
-export function validateTask(t: Task) {
+export function validateTask(t: Task, requireLabel = false) {
   if (!t.title.trim()) return "Bir görev başlığı yaz.";
+  if (requireLabel && !t.label.trim())
+    return "Etiket zorunlu; bir etiket seç veya yaz.";
   if (t.startAt && !t.scheduledDate) return "Saat aralığı için bir gün seç.";
   if ((t.startAt === null) !== (t.endAt === null))
     return "Başlangıç ve bitiş saatlerini birlikte gir.";

@@ -38,3 +38,9 @@
 - Recurrence instances inherit the series duration unless explicitly changed; changing a duration affects future sessions and preserves the running timer's timestamps and planned duration.
 - JSON backups include optional taskDurations metadata and still accept old backups; Drive ZIPs also include task-durations.json, and the installed host helper is updated without changing credentials or schedules.
 - v1.4.0 is packaged and published without quitting, replacing or relaunching the installed app so the current focus session remains uninterrupted.
+- v1.5.0 adds a confirmed Finish action beside Cancel; explicit completion records actual elapsed work excluding pauses, completes the task and stops the timer without starting a break.
+- Finishing during a break completes the task without additional focus credit; cancelling a break keeps the task active and preserves prior work, with no failed-task state.
+- Finish requests identify the current task and session timestamp so delayed confirmations cannot finish a replacement session or credit expired work twice.
+- Labels are required in task creation, editing and quick add; unchanged legacy blank labels remain valid for internal moves and old backups without migrating existing records.
+- The quick-add window is 480 by 260 pixels to fit its required label and Pomodoro duration fields.
+- v1.5.0 is packaged without replacing, quitting or restarting the installed app, and no existing user database is directly modified.

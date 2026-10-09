@@ -109,11 +109,18 @@ fn checks(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
     {
         return Err("Priority edit modified existing tasks or timer".into());
     }
-    if invoke("delete_task", json!({"id":task.id})).is_ok() || invoke("cancel", json!({})).is_ok() {
+    if invoke("delete_task", json!({"id":task.id})).is_ok()
+        || invoke("cancel", json!({})).is_ok()
+        || invoke(
+            "finish",
+            json!({"taskId":task.id,"startedAt":before_priority.data.timer.started_at}),
+        )
+        .is_ok()
+    {
         return Err("Deletion accepted without confirmation".into());
     }
     result.push(
-        "Priority preferences preserve task/timer payloads; unconfirmed deletions rejected".into(),
+        "Priority preferences preserve task/timer payloads; unconfirmed deletions/finishes rejected".into(),
     );
     invoke("pause", json!({}))?;
     {

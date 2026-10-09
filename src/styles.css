@@ -260,6 +260,22 @@ main {
   align-items: center;
   gap: 6px;
 }
+.timer-secondary-actions {
+  display: flex;
+  gap: 7px;
+}
+.finish-btn {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--green);
+  border: 1px solid var(--green);
+  background: var(--surface);
+  min-height: 36px;
+  padding: 9px 14px;
+}
+.finish-btn:focus-visible {
+  outline-color: var(--green);
+}
 .primary {
   background: var(--green);
   color: #fff;
@@ -971,8 +987,26 @@ kbd {
   font-size: 10px;
   color: var(--muted);
 }
+.quick-task-fields {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.quick-task-fields > input {
+  width: 100%;
+}
+.quick-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 75px;
+  gap: 10px;
+}
 .quick-window .quick-duration input {
   width: 75px;
+}
+.quick-window .quick-label input {
+  width: 100%;
 }
 .quick-window small {
   display: block;
@@ -1538,6 +1572,11 @@ span.task-circle {
   background: #a95a50;
   color: #fff;
   border-color: #a95a50;
+}
+.confirm-actions .positive-confirm {
+  background: var(--green);
+  color: #fff;
+  border-color: var(--green);
 }
 @media (prefers-reduced-motion: reduce) {
   .star-rating .star-button.lit {

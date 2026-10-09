@@ -22,7 +22,7 @@ DMG indirmeleri için SHA-256 dosyası da aynı Release’te bulunur.
 ## Kullanım
 
 - **Bugün:** Günün gündemi ve sayaç. **Yeni görev** ile görev oluştur; zorunlu **Pomodoro süresi** alanına 1–90 dakika gir. Görevin sağındaki ▶ bu süreyi kullanır: 30 dakika kaydettiysen oturum 30’dan başlar. Sayaçtaki görev listesinden de seçim yapabilirsin. Liste her zaman görünür; çalışan/duraklatılmış oturumda kilitlidir, mola sonunda başka görev seçilebilir. Görevsiz yeni odak başlatılamaz. Sayaçtaki görev adına tıklayınca yalnızca adını düzenlersin, süre etkilenmez.
-- **Liste:** Tarih veya süre vermeden görev ekle. `…` menüsünden bugüne, yarına veya istediğin güne taşı.
+- **Liste:** Tarih vermeden görev ekle; başlık, etiket ve pomodoro süresi zorunludur. `…` menüsünden bugüne, yarına veya istediğin güne taşı.
 - **Takvim:** Ay görünümünde tekrarların gelecekteki günlerini de gör; bir gün seç; o günün görevlerini, geçmişte tamamlananlar dahil gör. Geçmiş günler salt okunurdur: görev oluşturulamaz, değiştirilemez veya pomodoro başlatılamaz. **Bu güne görev ekle** ile bugün veya ileri bir tarihe plan yap. Sayaç paneli Bugün ve Liste’de görünür; diğer sekmelere geçmek çalışan sayacı etkilemez.
 - **Tamamlanan:** Görevin solundaki yuvarlakla tamamla. Buradaki ✓ yuvarlağına yeniden basınca görev eski gününe/listesine geri döner. **Biten odak oturumları** altında eski görevsiz oturumlar dahil çalışma geçmişini de görürsün; oturum bitmesi görevi tamamlamaz.
 - **Ayarlar:** Çalışma **1–90 dakika**, mola **1–30 dakika**; varsayılan **45/15**. Serbest giriş vardır, hazır süre ön ayarları yoktur.
@@ -33,18 +33,22 @@ DMG indirmeleri için SHA-256 dosyası da aynı Release’te bulunur.
 
 **Duraklat / Devam et** kalan süreyi korur. **İptal et** yalnızca o anki oturumu siler, hiçbir süre eklemez; önceden bitmiş oturumlar korunur. Çalışma bitince mola başlar; mola sonunda **Devam et** veya **5 dk daha** seçersin. Uygulamanın penceresini kapatmak sayacı durdurmaz. Menü çubuğundan **Çık** ile tamamen kapatsan bile tekrar açıldığında sayaç kayıtlı zaman damgasından hesaplanır. Uygulama tamamen kapalıyken bildirim gönderilemez; açılınca süresi geçen oturumlar kaydedilir.
 
+İşin erken biterse **İptal et** yanındaki **Bitir** düğmesine bas. **Evet, bitir** onayından sonra görev Tamamlanan’a taşınır, sayaç kapanır ve yalnızca gerçekten çalışılan süre istatistiklere eklenir. Örneğin 45 dakikalık oturumu 20 dakikada bitirmek grafiğe 20 dakika ekler; duraklamalar sayılmaz. Mola sırasında **Bitir**, görevi tamamlar ve molayı kapatır; önceki odak süresi korunur, mola odak süresine eklenmez. Tamamlanan’daki yuvarlakla görevi geri açmak kaydedilmiş çalışma süresini silmez.
+
+Mola sırasında **İptal et** yalnızca molayı kapatır. Görev aktif kalır; tamamlanmış veya başarısız sayılmaz. Önceki çalışma oturumunun süresi korunur.
+
 Görev, seri, alt görev veya etiket silme; oturum iptali ve JSON ile verileri değiştirme işlemleri önce onay ister. **Vazgeç** hiçbir değişiklik yapmaz.
 
 ## Planlama ve ek özellikler
 
 - Süresiz görev, tahmini süre, son bitirme zamanı ve tarih + saat aralığı desteklenir.
 - Saat aralıklı görevler başlamadan **15 dakika önce** sistem bildirimi gelir; bu süre ayarlardan değiştirilir. Başlangıç saati geçip bitişi henüz gelmemiş bir hatırlatma uygulama yeniden açıldığında gönderilir.
-- Etiket ve renk seç. Ayarlar’dan etiket oluştur veya seçim listesinden sil; silme mevcut görevlerin etiketini veya rengini değiştirmez. Yeni bir etiket yazınca otomatik oluşturma devam eder. Seçilen etiketin rengi yeni görev için varsayılandır; renk düzenleme diğer görevleri değiştirmez. Liste, Bugün, Tamamlanan ve Takvim’de etiket filtresi kullan.
+- Etiket alanı görev oluşturma ve düzenlemede zorunludur; mevcut etiketlerden seçebilir veya yenisini yazabilirsin. Ayarlar’dan etiket oluştur veya seçim listesinden sil; silme mevcut görevlerin etiketini veya rengini değiştirmez. Yeni bir etiket yazınca otomatik oluşturma devam eder. Seçilen etiketin rengi yeni görev için varsayılandır; renk düzenleme diğer görevleri değiştirmez. Liste, Bugün, Tamamlanan ve Takvim’de etiket filtresi kullan. Eski etiketsiz görevler kendiliğinden değiştirilmez.
 - Günlük, seçili haftalık günler ve aylık tekrarlar vardır. Her günün örneği bağımsızdır; birini tamamlamak seriyi bitirmez. Aylık 31 gibi bir tarih olmayan aylarda atlanır. Seriyi Liste’nin altından düzenle. Seri düzenlemeleri gelecekteki başlanmamış örneklere uygulanır; tamamlananlar ve süre harcanmış örnekler korunur. Seriyi silmek gelecekteki başlanmamış örnekleri de kaldırır.
 - Görevlere isteğe bağlı **1–5 yıldız öncelik** ver. Üzerine geldiğin yıldıza kadar yıldızlar parlar; tıklayınca kaydedilir. Bugün ve Liste’de görevleri önceliğe göre sıralayabilirsin. Tekrarlayan görevlerin etiketleri aynı belirgin renkli rozetleri kullanır; serinin önceliği, ayrıca değiştirilmemiş günlük örneklere uygulanır. Geçmiş takvimde yıldızlar yalnızca görüntülenir.
 - Göreve not ve alt görev ekle. Gün seçimi isteğe bağlıdır; alt görevler ana görevin gününü kullanır. Tekrar için gün zorunlu olduğunda seçili takvim günü (Liste’de bugün) hazır gelir. Zorunlu alanlarda hafif kırmızı kenarlık vardır. Alt görevlerin hepsi bitince ana görevi tamamlaman önerilir; otomatik tamamlanmaz.
 - İstatistik simgesinden günlük/haftalık odak süresi, haftalık çubuklar ve etiket dağılımını gör. Ek olarak son 14 günün çizgi grafiğindeki noktalara tıklayıp önceki güne göre artış/azalışı karşılaştır.
-- Varsayılan **⌘⇧K** global kısayolu küçük bir hızlı ekleme penceresi açar. Başlığı yaz, zorunlu pomodoro süresini kontrol et ve **Enter** ile tarihsiz listeye kaydet; **Esc** ile kapat. Süre ayarlardaki varsayılanla hazır gelir. Kısayol ayarlardan değiştirilir.
+- Varsayılan **⌘⇧K** global kısayolu küçük bir hızlı ekleme penceresi açar. Başlığı ve zorunlu etiketi yaz, zorunlu pomodoro süresini kontrol et ve **Enter** ile tarihsiz listeye kaydet; **Esc** ile kapat. Süre ayarlardaki varsayılanla hazır gelir. Kısayol ayarlardan değiştirilir.
 - Sistem açık/koyu temasını izler. Dock simgesi yoktur; menü çubuğu ikonuna basınca pencere açılır/kapanır. Sağ tık menüsünde **Çık** bulunur.
 
 ## Sesler ve otomatik başlatma
@@ -67,7 +71,7 @@ Etiket seçim listesi `labels.json`, yıldız öncelikleri `priorities.json`, g�
 
 ### Çalışan sayaç sırasında sürüm güncellemesi
 
-Yeni DMG’yi sayaç çalışırken mevcut uygulamanın üzerine kurma. Oturumunu bitir, menü çubuğundan **Çık** seç, sonra yeni paketi Applications’a sürükle. Uygulama verileri ayrı app-data klasöründe kalır; v1.4.0 için SQLite şema değişikliği veya eski görev dönüştürmesi yoktur.
+Yeni DMG’yi sayaç çalışırken mevcut uygulamanın üzerine kurma. Oturumunu bitir, menü çubuğundan **Çık** seç, sonra yeni paketi Applications’a sürükle. Uygulama verileri ayrı app-data klasöründe kalır; v1.5.0 için SQLite şema değişikliği veya eski görev dönüştürmesi yoktur.
 
 ![Odak istatistikleri](docs/screenshot-stats.png)
 
