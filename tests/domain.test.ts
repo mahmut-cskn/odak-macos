@@ -18,7 +18,142 @@ import {
   recommendFocus,
   formatElapsed,
   taskWorkSummary,
+  todayAgenda,
+  taskKind,
+  labelTotals,
 } from "../src/domain";
+describe("distinct deadline and recurring workflows", () => {
+  it("removes a completed deadline from its future deadline day while keeping completion history", () => {
+    const task = newTask();
+    task.kind = "deadline";
+    task.dueAt = new Date("2026-10-17T18:00:00").getTime();
+    task.status = "completed";
+    task.completedAt = new Date("2026-10-12T14:00:00").getTime();
+    expect(tasksForDay([task], "2026-10-17")).toEqual([]);
+    expect(tasksForDay([task], "2026-10-12")).toEqual([task]);
+  });
+  it("keeps unfinished deadlines in today's agenda without creating daily task copies", () => {
+    const task = newTask();
+    task.kind = "deadline";
+    task.dueAt = new Date("2026-10-17T18:00:00").getTime();
+    const before = JSON.stringify(task);
+    expect(todayAgenda([task], "2026-10-12")).toEqual([task]);
+    expect(todayAgenda([task], "2026-10-13")).toEqual([task]);
+    expect(JSON.stringify(task)).toBe(before);
+  });
+  it("completing this Friday leaves next Friday available with the shared rating", () => {
+    const root = newTask("2026-10-09");
+    root.kind = "recurring";
+    root.recurrenceRule = { frequency: "weekly", weekdays: [5], monthDay: 9 };
+    const done = {
+      ...root,
+      id: `${root.id}@2026-10-09`,
+      seriesId: root.id,
+      recurrenceRule: null,
+      status: "completed" as const,
+      completedAt: new Date("2026-10-09T17:00:00").getTime(),
+    };
+    const choices = focusCandidates([root, done], "2026-10-12");
+    expect(choices[0].scheduledDate).toBe("2026-10-16");
+    expect(taskPomodoroMin(choices[0], { [root.id]: 30 }, 45)).toBe(30);
+    expect(taskKind(choices[0])).toBe("recurring");
+  });
+  it("hides archived active duplicates after an explicit deadline conversion without mutating records", () => {
+    const root = newTask("2026-10-08");
+    root.kind = "deadline";
+    root.dueAt = new Date("2026-10-17T18:00:00").getTime();
+    root.recurrenceRule = { frequency: "daily", weekdays: [], monthDay: 8 };
+    const duplicate = { ...newTask("2026-10-13"), seriesId: root.id };
+    const records = [root, duplicate],
+      before = JSON.stringify(records);
+    expect(focusCandidates(records, "2026-10-12")).toEqual([root]);
+    expect(todayAgenda(records, "2026-10-12")).toEqual([root]);
+    expect(tasksForDay(records, "2026-10-13")).toEqual([]);
+    expect(JSON.stringify(records)).toBe(before);
+  });
+  it("retains an unfinished older recurrence remainder as today's resumable task", () => {
+    const root = newTask("2026-10-09");
+    root.kind = "recurring";
+    root.recurrenceRule = { frequency: "weekly", weekdays: [5], monthDay: 9 };
+    const old = {
+      ...root,
+      id: `${root.id}@2026-10-09`,
+      seriesId: root.id,
+      recurrenceRule: null,
+    };
+    const pending = { [old.id]: { remainingMs: 1_050_000, plannedMin: 45 } };
+    expect(focusCandidates([root, old], "2026-10-12", pending)[0].id).toBe(
+      old.id,
+    );
+    expect(todayAgenda([root, old], "2026-10-12", pending)).toEqual([old]);
+  });
+  it("preserves but hides legacy daily copies that conflict with an explicit Friday rule", () => {
+    const root = newTask("2026-10-08");
+    root.kind = "recurring";
+    root.recurrenceRule = { frequency: "weekly", weekdays: [5], monthDay: 8 };
+    const obsolete = { ...newTask("2026-10-12"), seriesId: root.id };
+    const records = [root, obsolete],
+      before = JSON.stringify(records);
+    expect(todayAgenda(records, "2026-10-12")).toEqual([]);
+    expect(focusCandidates(records, "2026-10-12")[0].scheduledDate).toBe(
+      "2026-10-16",
+    );
+    expect(JSON.stringify(records)).toBe(before);
+  });
+  it("aggregates preserved instance work for a converted deadline without rewriting sessions", () => {
+    const root = newTask();
+    root.kind = "deadline";
+    root.recurrenceRule = { frequency: "daily", weekdays: [], monthDay: 1 };
+    root.dueAt = Date.now();
+    const child = { ...newTask(), seriesId: root.id };
+    const session: Session = {
+      id: "saved",
+      taskId: child.id,
+      type: "work",
+      plannedMin: 45,
+      actualMin: 27.5,
+      label: "İş",
+      startedAt: 0,
+      endedAt: 1650000,
+      outcome: "switched",
+    };
+    expect(taskWorkSummary(root.id, [session], [root, child]).totalMin).toBe(
+      27.5,
+    );
+    expect(session.taskId).toBe(child.id);
+  });
+  it("uses identical work records for daily points and selected-day label proportions", () => {
+    const make = (
+      id: string,
+      date: string,
+      actualMin: number,
+      label: string,
+      type: "work" | "break" = "work",
+    ): Session => ({
+      id,
+      taskId: null,
+      type,
+      startedAt: new Date(`${date}T10:00:00`).getTime(),
+      endedAt: new Date(`${date}T11:00:00`).getTime(),
+      plannedMin: 45,
+      actualMin,
+      label,
+    });
+    const records = [
+      make("cut", "2026-10-09", 27.5, "İş"),
+      make("other", "2026-10-09", 15, "Okul"),
+      make("today", "2026-10-12", 10, "İş"),
+      make("break", "2026-10-09", 15, "Mola", "break"),
+    ];
+    expect(labelTotals(records, "2026-10-09")).toEqual({ İş: 27.5, Okul: 15 });
+    expect(labelTotals(records, "2026-10-12")).toEqual({ İş: 10 });
+    expect(labelTotals(records, "2026-09-29", "2026-10-12")).toEqual({
+      İş: 37.5,
+      Okul: 15,
+    });
+    expect(formatMinutes(27.5)).toBe("27dk 30sn");
+  });
+});
 describe("next focus recommendations and unique recurrence choices", () => {
   const task = (id: string, date: string | null) => ({
     ...newTask(date),
@@ -429,14 +564,14 @@ describe("past planning and optional priority", () => {
     today.dueAt = now - 120000;
     expect(validatePlanningChange(today, old, "2026-10-08", now)).toBeTruthy();
   });
-  it("inherits recurring series priority until an instance is explicitly rated", async () => {
+  it("uses shared series priority without discarding legacy instance entries", async () => {
     const { priorityFor } = await import("../src/domain");
     const instance = newTask("2026-10-09");
     instance.seriesId = "series";
     const before = JSON.stringify(instance);
     expect(priorityFor(instance, {})).toBe(0);
     expect(priorityFor(instance, { series: 5 })).toBe(5);
-    expect(priorityFor(instance, { series: 5, [instance.id]: 2 })).toBe(2);
+    expect(priorityFor(instance, { series: 5, [instance.id]: 2 })).toBe(5);
     expect(JSON.stringify(instance)).toBe(before);
   });
 });

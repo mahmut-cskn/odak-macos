@@ -8,7 +8,7 @@ pub struct Subtask {
     pub title: String,
     pub done: bool,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Recurrence {
     pub frequency: String,
@@ -18,6 +18,8 @@ pub struct Recurrence {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Task {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     pub id: String,
     pub title: String,
     pub label: String,
@@ -38,6 +40,8 @@ pub struct Task {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Session {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
     pub id: String,
     pub task_id: Option<String>,
     pub r#type: String,
@@ -50,6 +54,8 @@ pub struct Session {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TimerState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_budget_ms: Option<i64>,
     pub task_id: Option<String>,
     pub phase: String,
     pub paused_phase: Option<String>,
@@ -64,6 +70,7 @@ pub struct TimerState {
 impl Default for TimerState {
     fn default() -> Self {
         Self {
+            work_budget_ms: None,
             task_id: None,
             phase: "idle".into(),
             paused_phase: None,
@@ -82,12 +89,16 @@ impl TimerState {
         if self.phase == "idle" {
             return 0;
         }
-        (self.planned_min as i64 * 60_000
+        (self.budget_ms()
             - (self.paused_at.unwrap_or(now)
                 - self.started_at.unwrap_or(now)
                 - self.paused_accumulated_ms)
                 .max(0))
         .max(0)
+    }
+    pub fn budget_ms(&self) -> i64 {
+        self.work_budget_ms
+            .unwrap_or(self.planned_min as i64 * 60_000)
     }
     pub fn begin(&mut self, task: Option<String>, phase: &str, minutes: u32, now: i64) {
         self.task_id = task;
@@ -97,6 +108,7 @@ impl TimerState {
         self.paused_phase = None;
         self.paused_accumulated_ms = 0;
         self.planned_min = minutes;
+        self.work_budget_ms = None;
         self.break_ready = false;
     }
     pub fn pause(&mut self, now: i64) -> Result<(), String> {
@@ -153,11 +165,42 @@ impl Default for Settings {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Data {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub suspended_work: std::collections::BTreeMap<String, SuspendedWork>,
     pub tasks: Vec<Task>,
     pub sessions: Vec<Session>,
     pub timer: TimerState,
     pub settings: Settings,
     pub notified: Vec<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SuspendedWork {
+    pub remaining_ms: i64,
+    pub planned_min: u32,
+}
+pub fn is_series(task: &Task) -> bool {
+    task.recurrence_rule.is_some() && task.kind.as_deref().is_none_or(|kind| kind == "recurring")
+}
+pub fn is_deadline(task: &Task) -> bool {
+    task.kind.as_deref() == Some("deadline")
+        || (task.kind.is_none()
+            && task.recurrence_rule.is_none()
+            && task.series_id.is_none()
+            && task.due_at.is_some())
+}
+pub fn archived_occurrence(tasks: &[Task], task: &Task) -> bool {
+    task.series_id.as_ref().is_some_and(|id| {
+        tasks.iter().any(|parent| {
+            &parent.id == id
+                && (parent.kind.as_deref() == Some("deadline")
+                    || (parent.kind.as_deref() == Some("recurring")
+                        && task.scheduled_date.as_ref().is_some_and(|date| {
+                            NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                                .is_ok_and(|date| !occurs(parent, date))
+                        })))
+        })
+    })
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -185,6 +228,16 @@ pub fn validate_settings(s: &Settings) -> Result<(), String> {
     Ok(())
 }
 pub fn validate_task(t: &Task) -> Result<(), String> {
+    if t.kind
+        .as_deref()
+        .is_some_and(|kind| !["list", "deadline", "recurring"].contains(&kind))
+        || (t.kind.as_deref() == Some("deadline") && t.due_at.is_none())
+        || (t.kind.as_deref() == Some("recurring")
+            && t.recurrence_rule.is_none()
+            && t.series_id.is_none())
+    {
+        return Err("Görev türü ve zaman kuralı uyuşmuyor.".into());
+    }
     if t.id.is_empty()
         || t.title.trim().is_empty()
         || t.title.len() > 1000
@@ -278,9 +331,7 @@ pub fn set_subtask(
     let task = data
         .tasks
         .iter_mut()
-        .find(|task| {
-            task.id == task_id && task.status == "active" && task.recurrence_rule.is_none()
-        })
+        .find(|task| task.id == task_id && task.status == "active" && !is_series(task))
         .ok_or("Düzenlenebilir aktif görev bulunamadı.")?;
     let subtask = task
         .subtasks
@@ -307,6 +358,7 @@ pub fn prune_future_instances(data: &mut Data, series: &str, today: NaiveDate) -
             && task.status == "active"
             && date.is_some_and(|d| d >= today)
             && !started.contains(&task.id)
+            && !data.suspended_work.contains_key(&task.id)
             && data.timer.task_id.as_deref() != Some(task.id.as_str());
         if remove {
             removed.push(date.unwrap());
@@ -317,7 +369,7 @@ pub fn prune_future_instances(data: &mut Data, series: &str, today: NaiveDate) -
 }
 pub fn upsert_task(data: &mut Data, task: Task, today: NaiveDate) {
     let previous = data.tasks.iter().find(|t| t.id == task.id);
-    let dates = if previous.is_some_and(|t| t.recurrence_rule.is_some()) {
+    let dates = if is_series(&task) && previous.is_some_and(is_series) {
         prune_future_instances(data, &task.id, today)
     } else {
         vec![]
@@ -334,6 +386,9 @@ pub fn upsert_task(data: &mut Data, task: Task, today: NaiveDate) {
     }
 }
 pub fn occurs(t: &Task, date: NaiveDate) -> bool {
+    if !is_series(t) {
+        return false;
+    }
     let Some(r) = &t.recurrence_rule else {
         return false;
     };
@@ -365,7 +420,7 @@ pub fn materialize(data: &mut Data, date: NaiveDate) -> bool {
     let templates: Vec<Task> = data
         .tasks
         .iter()
-        .filter(|t| t.recurrence_rule.is_some() && t.series_id.is_none())
+        .filter(|t| is_series(t) && t.series_id.is_none() && t.status == "active")
         .cloned()
         .collect();
     let mut changed = false;
@@ -395,7 +450,11 @@ fn recurrence_instance(template: &Task, date: NaiveDate) -> Task {
         .end_at
         .zip(template.start_at)
         .and_then(|(end, start)| instance.start_at.map(|value| value + end - start));
-    instance.due_at = shift_time(template.due_at, date);
+    instance.due_at = if template.kind.as_deref() == Some("recurring") {
+        None
+    } else {
+        shift_time(template.due_at, date)
+    };
     instance
         .subtasks
         .iter_mut()
@@ -415,7 +474,7 @@ pub fn prepare_focus_start(data: &mut Data, id: &str, today: NaiveDate) -> Resul
         .find(|task| {
             task.id == series
                 && task.status == "active"
-                && task.recurrence_rule.is_some()
+                && is_series(task)
                 && task.series_id.is_none()
         })
         .ok_or("Tekrarlayan görev bulunamadı.")?;
@@ -434,9 +493,8 @@ pub fn finish_due(data: &mut Data, now: i64) -> Vec<String> {
             break;
         }
         let phase = timer.phase.clone();
-        let ended = timer.started_at.unwrap_or(now)
-            + timer.paused_accumulated_ms
-            + timer.planned_min as i64 * 60_000;
+        let ended =
+            timer.started_at.unwrap_or(now) + timer.paused_accumulated_ms + timer.budget_ms();
         let label = timer
             .task_id
             .as_ref()
@@ -444,16 +502,20 @@ pub fn finish_due(data: &mut Data, now: i64) -> Vec<String> {
             .map(|t| t.label.clone())
             .unwrap_or_else(|| "Serbest".into());
         data.sessions.push(Session {
+            outcome: Some("elapsed".into()),
             id: uuid::Uuid::new_v4().to_string(),
             task_id: timer.task_id.clone(),
             r#type: phase.clone(),
             started_at: timer.started_at.unwrap_or(now),
             ended_at: ended,
             planned_min: timer.planned_min,
-            actual_min: timer.planned_min as f64,
+            actual_min: timer.budget_ms() as f64 / 60_000.0,
             label,
         });
         if phase == "work" {
+            if let Some(id) = &data.timer.task_id {
+                data.suspended_work.remove(id);
+            }
             data.timer.begin(
                 data.timer.task_id.clone(),
                 "break",
@@ -508,14 +570,15 @@ pub fn finish_task_session(
     let task_index = data
         .tasks
         .iter()
-        .position(|t| t.id == task_id && t.recurrence_rule.is_none())
+        .position(|t| t.id == task_id && !is_series(t))
         .ok_or("Görev bulunamadı.")?;
     // A deadline may have passed while confirmation was open. Normal completion already
     // credits full work; the following break must never credit it a second time.
     finish_due(data, now);
     if data.timer.phase == "work" || data.timer.paused_phase.as_deref() == Some("work") {
-        let elapsed_ms = data.timer.planned_min as i64 * 60_000 - data.timer.remaining_ms(now);
+        let elapsed_ms = data.timer.budget_ms() - data.timer.remaining_ms(now);
         data.sessions.push(Session {
+            outcome: Some("finished".into()),
             id: uuid::Uuid::new_v4().to_string(),
             task_id: Some(task_id.into()),
             r#type: "work".into(),
@@ -529,6 +592,7 @@ pub fn finish_task_session(
     let task = &mut data.tasks[task_index];
     task.status = "completed".into();
     task.completed_at = Some(task.completed_at.unwrap_or(now));
+    data.suspended_work.remove(task_id);
     data.timer.cancel();
     Ok(())
 }
@@ -538,6 +602,124 @@ pub fn reminder_horizon(data: &mut Data, now: DateTime<Local>) -> bool {
         changed |= materialize(data, now.date_naive() + Duration::days(offset));
     }
     changed
+}
+pub fn begin_focus(
+    data: &mut Data,
+    id: &str,
+    work_min: u32,
+    break_min: u32,
+    now: i64,
+) -> Result<(), String> {
+    if !(1..=90).contains(&work_min) || !(1..=30).contains(&break_min) {
+        return Err("Çalışma 1–90, mola 1–30 dakika olmalı.".into());
+    }
+    prepare_focus_start(
+        data,
+        id,
+        Local
+            .timestamp_millis_opt(now)
+            .single()
+            .ok_or("Geçersiz zaman.")?
+            .date_naive(),
+    )?;
+    let pending = data.suspended_work.remove(id);
+    let planned = pending.as_ref().map(|p| p.planned_min).unwrap_or(work_min);
+    data.timer.work_min = planned;
+    data.timer.break_min = break_min;
+    data.timer.begin(Some(id.into()), "work", planned, now);
+    data.timer.work_budget_ms = pending.map(|p| p.remaining_ms);
+    Ok(())
+}
+pub fn switch_focus(
+    data: &mut Data,
+    from: &str,
+    stamp: i64,
+    target: &str,
+    work: u32,
+    rest: u32,
+    now: i64,
+) -> Result<(), String> {
+    if data.timer.task_id.as_deref() != Some(from)
+        || data.timer.phase == "idle"
+        || data.timer.started_at != Some(stamp)
+    {
+        return Err("Değiştirilecek oturum değişti. Güncel sayacı kontrol edin.".into());
+    }
+    let work_phase =
+        data.timer.phase == "work" || data.timer.paused_phase.as_deref() == Some("work");
+    if work_phase && from == target {
+        return Err("Bu görev zaten çalışıyor.".into());
+    }
+    if !(1..=90).contains(&work) || !(1..=30).contains(&rest) {
+        return Err("Süre sınırları geçersiz.".into());
+    }
+    prepare_focus_start(
+        data,
+        target,
+        Local
+            .timestamp_millis_opt(now)
+            .single()
+            .ok_or("Geçersiz zaman.")?
+            .date_naive(),
+    )?;
+    finish_due(data, now);
+    if data.timer.phase == "work" || data.timer.paused_phase.as_deref() == Some("work") {
+        let remaining = data.timer.remaining_ms(now);
+        let elapsed = data.timer.budget_ms() - remaining;
+        if elapsed > 0 {
+            data.sessions.push(Session {
+                outcome: Some("switched".into()),
+                id: uuid::Uuid::new_v4().to_string(),
+                task_id: Some(from.into()),
+                r#type: "work".into(),
+                started_at: stamp,
+                ended_at: now,
+                planned_min: data.timer.planned_min,
+                actual_min: elapsed as f64 / 60_000.0,
+                label: data
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == from)
+                    .map(|t| t.label.clone())
+                    .unwrap_or_default(),
+            });
+        }
+        if remaining > 0
+            && data
+                .tasks
+                .iter()
+                .any(|task| task.id == from && task.status == "active")
+        {
+            data.suspended_work.insert(
+                from.into(),
+                SuspendedWork {
+                    remaining_ms: remaining,
+                    planned_min: data.timer.planned_min,
+                },
+            );
+        }
+    }
+    begin_focus(data, target, work, rest, now)
+}
+pub fn cancel_focus(data: &mut Data) {
+    if data.timer.phase == "work" || data.timer.paused_phase.as_deref() == Some("work") {
+        if let (Some(id), Some(budget)) = (&data.timer.task_id, data.timer.work_budget_ms) {
+            if data
+                .tasks
+                .iter()
+                .any(|task| &task.id == id && task.status == "active")
+            {
+                data.suspended_work.insert(
+                    id.clone(),
+                    SuspendedWork {
+                        remaining_ms: budget,
+                        planned_min: data.timer.planned_min,
+                    },
+                );
+            }
+        }
+    }
+    data.timer.cancel();
 }
 /// Title-only editing never changes the running timer, placement, label or series.
 pub fn rename_task(data: &mut Data, id: &str, title: &str) -> Result<(), String> {
@@ -557,7 +739,8 @@ pub fn validate_focus_task(data: &Data, id: &str) -> Result<(), String> {
     if !data.tasks.iter().any(|t| {
         t.id == id
             && t.status == "active"
-            && t.recurrence_rule.is_none()
+            && !is_series(t)
+            && !archived_occurrence(&data.tasks, t)
             && !t.title.trim().is_empty()
     }) {
         return Err("Adı olan aktif bir görev seçin.".into());
@@ -594,6 +777,9 @@ pub fn validate_planning_change(
 pub fn validate_focus_start(data: &Data, id: &str, today: NaiveDate) -> Result<(), String> {
     validate_focus_task(data, id)?;
     let task = data.tasks.iter().find(|t| t.id == id).unwrap();
+    if is_deadline(task) || data.suspended_work.contains_key(id) {
+        return Ok(());
+    }
     let date = task.scheduled_date.clone().or_else(|| {
         task.due_at.and_then(|ms| {
             Local
@@ -613,6 +799,119 @@ mod tests {
     use super::*;
     fn task() -> Task {
         serde_json::from_value(serde_json::json!({"id":"task","title":"Task","label":"İş","color":"#438470","notes":"","status":"active","completedAt":null,"estimateMin":null,"scheduledDate":"2026-10-01","startAt":null,"endAt":null,"dueAt":null,"recurrenceRule":null,"seriesId":null,"subtasks":[],"createdAt":0})).unwrap()
+    }
+    #[test]
+    fn switching_credits_exact_elapsed_work_and_keeps_remaining_time() {
+        let mut data = Data::default();
+        let mut first = task();
+        first.scheduled_date = None;
+        let mut second = first.clone();
+        second.id = "other".into();
+        second.label = "Lab".into();
+        data.tasks = vec![first, second];
+        data.timer.begin(Some("task".into()), "work", 45, 1000);
+        switch_focus(&mut data, "task", 1000, "other", 30, 15, 1_651_000).unwrap();
+        assert_eq!(data.sessions.len(), 1);
+        assert_eq!(data.sessions[0].actual_min, 27.5);
+        assert_eq!(data.sessions[0].outcome.as_deref(), Some("switched"));
+        assert_eq!(
+            data.suspended_work["task"].remaining_ms,
+            17 * 60_000 + 30_000
+        );
+        assert_eq!(data.timer.task_id.as_deref(), Some("other"));
+        assert!(data.tasks.iter().all(|task| task.status == "active"));
+    }
+    #[test]
+    fn switched_remainder_survives_sqlite_restart_and_resets_after_consumption() {
+        let mut data = Data::default();
+        let mut first = task();
+        first.scheduled_date = None;
+        let mut second = first.clone();
+        second.id = "other".into();
+        data.tasks = vec![first, second];
+        data.timer.begin(Some("task".into()), "work", 45, 1000);
+        switch_focus(&mut data, "task", 1000, "other", 30, 15, 1_651_000).unwrap();
+        let mut conn = crate::storage::open(std::path::Path::new(":memory:")).unwrap();
+        crate::storage::save(&mut conn, &data).unwrap();
+        let mut reopened = crate::storage::load(&conn).unwrap();
+        reopened.timer.cancel();
+        begin_focus(&mut reopened, "task", 45, 15, 2_000_000).unwrap();
+        assert_eq!(reopened.timer.remaining_ms(2_000_000), 1_050_000);
+        assert_eq!(reopened.timer.work_min, 45);
+        finish_due(&mut reopened, 3_050_000);
+        assert_eq!(
+            reopened
+                .sessions
+                .iter()
+                .filter(|s| s.task_id.as_deref() == Some("task"))
+                .map(|s| s.actual_min)
+                .sum::<f64>(),
+            45.0
+        );
+        assert!(!reopened.suspended_work.contains_key("task"));
+        assert_eq!(reopened.tasks[0].status, "active");
+        reopened.timer.cancel();
+        begin_focus(&mut reopened, "task", 45, 15, 4_000_000).unwrap();
+        assert_eq!(reopened.timer.remaining_ms(4_000_000), 45 * 60_000);
+    }
+    #[test]
+    fn paused_switch_excludes_pause_and_cancel_restores_previously_saved_remainder() {
+        let mut data = Data::default();
+        let mut first = task();
+        first.scheduled_date = None;
+        let mut second = first.clone();
+        second.id = "other".into();
+        data.tasks = vec![first, second];
+        data.timer.begin(Some("task".into()), "work", 45, 1000);
+        data.timer.pause(1_651_000).unwrap();
+        switch_focus(&mut data, "task", 1000, "other", 30, 15, 9_000_000).unwrap();
+        assert_eq!(data.sessions[0].actual_min, 27.5);
+        cancel_focus(&mut data);
+        begin_focus(&mut data, "task", 45, 15, 10_000_000).unwrap();
+        data.timer.pause(10_300_000).unwrap();
+        cancel_focus(&mut data);
+        assert_eq!(data.suspended_work["task"].remaining_ms, 1_050_000);
+        assert_eq!(data.sessions.len(), 1);
+    }
+    #[test]
+    fn invalid_or_stale_switch_never_changes_original_session() {
+        let mut data = Data::default();
+        data.tasks.push(task());
+        data.timer.begin(Some("task".into()), "work", 45, 1000);
+        let before = serde_json::to_value(&data).unwrap();
+        for (stamp, target) in [(999, "task"), (1000, "missing"), (1000, "task")] {
+            assert!(switch_focus(&mut data, "task", stamp, target, 45, 15, 2000).is_err());
+            assert_eq!(serde_json::to_value(&data).unwrap(), before);
+        }
+    }
+    #[test]
+    fn deadline_conversion_keeps_all_old_instances_but_stops_new_generation() {
+        let mut data = Data::default();
+        let mut parent = task();
+        parent.recurrence_rule = Some(Recurrence {
+            frequency: "daily".into(),
+            weekdays: vec![],
+            month_day: 1,
+        });
+        parent.due_at = Some(1_800_000_000_000);
+        data.tasks.push(parent.clone());
+        materialize(&mut data, NaiveDate::from_ymd_opt(2026, 10, 13).unwrap());
+        let instances = serde_json::to_value(&data.tasks[1..]).unwrap();
+        parent.kind = Some("deadline".into());
+        parent.status = "completed".into();
+        parent.completed_at = Some(1_000_000);
+        upsert_task(
+            &mut data,
+            parent,
+            NaiveDate::from_ymd_opt(2026, 10, 12).unwrap(),
+        );
+        assert_eq!(serde_json::to_value(&data.tasks[1..]).unwrap(), instances);
+        assert!(data.tasks[0].recurrence_rule.is_some());
+        assert!(archived_occurrence(&data.tasks, &data.tasks[1]));
+        assert!(!materialize(
+            &mut data,
+            NaiveDate::from_ymd_opt(2026, 10, 14).unwrap()
+        ));
     }
     #[test]
     fn one_second_finished_work_is_a_completed_session_with_exact_actual_time() {
@@ -991,6 +1290,30 @@ mod tests {
         assert_eq!(removed, vec![today + Duration::days(1)]);
         assert!(d.tasks.iter().any(|t| t.id == "task@2026-10-07"));
         assert!(d.tasks.iter().any(|t| t.id == "task@2026-10-08"));
+    }
+    #[test]
+    fn saved_zero_elapsed_remainder_protects_future_instance_from_pruning() {
+        let mut data = Data::default();
+        let mut template = task();
+        template.recurrence_rule = Some(Recurrence {
+            frequency: "daily".into(),
+            weekdays: vec![],
+            month_day: 1,
+        });
+        data.tasks.push(template);
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        materialize(&mut data, today + Duration::days(1));
+        let id = "task@2026-10-13";
+        data.suspended_work.insert(
+            id.into(),
+            SuspendedWork {
+                remaining_ms: 2_700_000,
+                planned_min: 45,
+            },
+        );
+        assert!(prune_future_instances(&mut data, "task", today).is_empty());
+        assert!(data.tasks.iter().any(|task| task.id == id));
+        assert_eq!(data.suspended_work[id].remaining_ms, 2_700_000);
     }
     #[test]
     fn label_color_edit_preserves_unrelated_tasks() {

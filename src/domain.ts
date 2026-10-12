@@ -9,6 +9,7 @@ export interface Recurrence {
   monthDay: number;
 }
 export interface Task {
+  kind?: "list" | "deadline" | "recurring";
   id: string;
   title: string;
   label: string;
@@ -27,6 +28,7 @@ export interface Task {
   createdAt: number;
 }
 export interface Session {
+  outcome?: "elapsed" | "finished" | "switched";
   id: string;
   taskId: string | null;
   type: "work" | "break";
@@ -37,6 +39,7 @@ export interface Session {
   label: string;
 }
 export interface Timer {
+  workBudgetMs?: number;
   taskId: string | null;
   phase: "idle" | "work" | "break" | "paused";
   pausedPhase: "work" | "break" | null;
@@ -59,6 +62,7 @@ export interface Settings {
   launchAtLogin: boolean;
 }
 export interface Data {
+  suspendedWork?: Record<string, { remainingMs: number; plannedMin: number }>;
   tasks: Task[];
   sessions: Session[];
   timer: Timer;
@@ -93,6 +97,8 @@ export function shiftDay(value: string, offset: number) {
   return dayKey(d);
 }
 export const formatMinutes = (minutes: number) => {
+  if (minutes >= 1 && Math.abs(minutes - Math.round(minutes)) > 0.00001)
+    return formatElapsed(minutes);
   if (minutes > 0 && minutes < 1) {
     const seconds = Math.round(minutes * 60);
     return seconds ? `${seconds}sn` : "<1sn";
@@ -135,9 +141,22 @@ export const spent = (taskId: string, sessions: Session[]) =>
   sessions
     .filter((s) => s.type === "work" && s.taskId === taskId)
     .reduce((sum, s) => sum + s.actualMin, 0);
-export function taskWorkSummary(taskId: string, sessions: Session[]) {
+export function taskWorkSummary(
+  taskId: string,
+  sessions: Session[],
+  tasks: Task[] = [],
+) {
+  const root = tasks.find((task) => task.id === taskId);
+  const ids = new Set([taskId]);
+  if (root?.kind === "deadline" && root.recurrenceRule)
+    tasks
+      .filter((task) => task.seriesId === taskId)
+      .forEach((task) => ids.add(task.id));
   const work = sessions
-    .filter((session) => session.type === "work" && session.taskId === taskId)
+    .filter(
+      (session) =>
+        session.type === "work" && !!session.taskId && ids.has(session.taskId),
+    )
     .sort((a, b) => b.endedAt - a.endedAt);
   return {
     work,
@@ -167,15 +186,38 @@ export function newTask(date: string | null = null): Task {
 }
 export function tasksForDay(tasks: Task[], date: string) {
   return tasks
-    .filter(
-      (t) =>
-        !t.recurrenceRule &&
-        (t.scheduledDate === date ||
-          (!t.scheduledDate && t.dueAt && dayKey(new Date(t.dueAt)) === date) ||
-          (t.status === "completed" &&
-            t.completedAt &&
-            dayKey(new Date(t.completedAt)) === date)),
-    )
+    .filter((t) => {
+      if (isSeries(t)) return false;
+      if (archivedOccurrence(t, tasks)) {
+        const parent = tasks.find((parent) => parent.id === t.seriesId)!;
+        const parentCompleted = parent.completedAt
+          ? dayKey(new Date(parent.completedAt))
+          : null;
+        if (
+          date < dayKey() &&
+          t.scheduledDate === date &&
+          parentCompleted !== date
+        )
+          return true;
+        return (
+          parent.status !== "completed" &&
+          t.status === "completed" &&
+          !!t.completedAt &&
+          dayKey(new Date(t.completedAt)) === date
+        );
+      }
+      if (taskKind(t) === "deadline")
+        return t.status === "completed"
+          ? !!t.completedAt && dayKey(new Date(t.completedAt)) === date
+          : !!t.dueAt && dayKey(new Date(t.dueAt)) === date;
+      return (
+        t.scheduledDate === date ||
+        (!t.scheduledDate && t.dueAt && dayKey(new Date(t.dueAt)) === date) ||
+        (t.status === "completed" &&
+          t.completedAt &&
+          dayKey(new Date(t.completedAt)) === date)
+      );
+    })
     .sort(
       (a, b) =>
         (a.startAt ?? a.dueAt ?? Infinity) -
@@ -206,6 +248,10 @@ export function stats(sessions: Session[], today = dayKey()) {
   return { daily, weekly, labels, days, weekStart, sessionCount };
 }
 export function validateTask(t: Task, requireLabel = false) {
+  if (t.kind === "deadline" && !t.dueAt)
+    return "Son tarihli iş için son bitirme tarihini seç.";
+  if (t.kind === "recurring" && !t.recurrenceRule && !t.seriesId)
+    return "Tekrar kuralı gerekli.";
   if (!t.title.trim()) return "Bir görev başlığı yaz.";
   if (requireLabel && !t.label.trim())
     return "Etiket zorunlu; bir etiket seç veya yaz.";
@@ -225,7 +271,13 @@ export function validateTask(t: Task, requireLabel = false) {
 }
 export function occursOn(task: Task, date: string) {
   const rule = task.recurrenceRule;
-  if (!rule || !task.scheduledDate || date < task.scheduledDate) return false;
+  if (
+    !isSeries(task) ||
+    !rule ||
+    !task.scheduledDate ||
+    date < task.scheduledDate
+  )
+    return false;
   const d = parseDay(date);
   return (
     rule.frequency === "daily" ||
@@ -294,29 +346,35 @@ export function dailyTrend(sessions: Session[], today = dayKey(), count = 14) {
 }
 
 export function isPastTask(task: Task, today = dayKey()) {
+  if (taskKind(task) === "deadline" && task.status === "active") return false;
   const date =
     task.scheduledDate || (task.dueAt ? dayKey(new Date(task.dueAt)) : null);
   return !!date && date < today;
 }
 export function priorityFor(task: Task, priorities: Record<string, number>) {
   return (
-    priorities[task.id] ??
     (task.seriesId ? priorities[task.seriesId] : undefined) ??
+    priorities[task.id] ??
     0
   );
 }
 /** One active occurrence per series, including a lazy preview beyond the reminder horizon. */
-export function focusCandidates(tasks: Task[], today = dayKey()) {
+export function focusCandidates(
+  tasks: Task[],
+  today = dayKey(),
+  pending: Data["suspendedWork"] = {},
+) {
   const available = tasks.filter(
     (task) =>
       task.status === "active" &&
-      !task.recurrenceRule &&
-      !isPastTask(task, today),
+      !isSeries(task) &&
+      !archivedOccurrence(task, tasks) &&
+      (!isPastTask(task, today) || !!pending?.[task.id]),
   );
   for (const template of tasks.filter(
     (task) =>
       task.status === "active" &&
-      task.recurrenceRule &&
+      isSeries(task) &&
       !task.seriesId &&
       task.scheduledDate,
   )) {
@@ -356,7 +414,8 @@ export function focusCandidates(tasks: Task[], today = dayKey()) {
             template.startAt !== null
               ? startAt + template.endAt - template.startAt
               : null,
-          dueAt: shiftTime(template.dueAt),
+          dueAt:
+            template.kind === "recurring" ? null : shiftTime(template.dueAt),
           completedAt: null,
           subtasks: template.subtasks.map((subtask) => ({
             ...subtask,
@@ -385,9 +444,10 @@ export function recommendFocus(
   priorities: Record<string, number>,
   today = dayKey(),
   previousTaskId: string | null = null,
+  pending: Data["suspendedWork"] = {},
 ) {
   const available = candidates.filter((task) => task.id !== previousTaskId);
-  const todayTasks = tasksForDay(available, today);
+  const todayTasks = todayAgenda(available, today, pending);
   const pool = todayTasks.length
     ? todayTasks
     : available.filter((task) => !task.scheduledDate);
@@ -409,6 +469,63 @@ export function taskPomodoroMin(
     (task.seriesId ? durations[task.seriesId] : undefined) ??
     fallback
   );
+}
+export function isSeries(task: Task) {
+  return !!task.recurrenceRule && (!task.kind || task.kind === "recurring");
+}
+export function taskKind(task: Task) {
+  return (
+    task.kind ||
+    (task.recurrenceRule || task.seriesId
+      ? "recurring"
+      : task.dueAt
+        ? "deadline"
+        : "list")
+  );
+}
+export function archivedOccurrence(task: Task, tasks: Task[]) {
+  return (
+    !!task.seriesId &&
+    tasks.some(
+      (parent) =>
+        parent.id === task.seriesId &&
+        (parent.kind === "deadline" ||
+          (parent.kind === "recurring" &&
+            !!task.scheduledDate &&
+            !occursOn(parent, task.scheduledDate))),
+    )
+  );
+}
+export function todayAgenda(
+  tasks: Task[],
+  today = dayKey(),
+  pending: Data["suspendedWork"] = {},
+) {
+  const scheduled = tasksForDay(tasks, today).filter(
+    (task) => task.status === "active",
+  );
+  const ids = new Set(scheduled.map((task) => task.id));
+  return [
+    ...scheduled,
+    ...tasks.filter(
+      (task) =>
+        task.status === "active" &&
+        (taskKind(task) === "deadline" || !!pending?.[task.id]) &&
+        !isSeries(task) &&
+        !archivedOccurrence(task, tasks) &&
+        !ids.has(task.id),
+    ),
+  ];
+}
+export function labelTotals(sessions: Session[], start: string, end = start) {
+  const labels: Record<string, number> = {};
+  for (const session of sessions) {
+    const date = dayKey(new Date(session.endedAt));
+    if (session.type === "work" && date >= start && date <= end)
+      labels[session.label || "Etiketsiz"] =
+        (labels[session.label || "Etiketsiz"] || 0) + session.actualMin;
+  }
+  return labels;
 }
 export function validatePomodoroMin(minutes: number | string) {
   return typeof minutes === "number" &&

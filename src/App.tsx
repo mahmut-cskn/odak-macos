@@ -33,11 +33,17 @@ import {
   requestPermission,
 } from "@tauri-apps/plugin-notification";
 import { action, call, load, subscribe } from "./api";
+import DatabaseInspector from "./DatabaseInspector";
 import {
   calendarPreview,
   dailyTrend,
   focusCandidates,
   recommendFocus,
+  isSeries,
+  taskKind,
+  archivedOccurrence,
+  todayAgenda,
+  labelTotals,
   isPastTask,
   priorityFor,
   taskPomodoroMin,
@@ -78,7 +84,16 @@ type ConfirmRequest = (
   action: Confirmation["action"],
   options?: Pick<Confirmation, "confirmLabel" | "positive">,
 ) => void;
-type Tab = "today" | "list" | "calendar" | "completed" | "stats" | "settings";
+type Tab =
+  | "today"
+  | "list"
+  | "calendar"
+  | "completed"
+  | "deadline"
+  | "recurring"
+  | "stats"
+  | "settings"
+  | "data";
 const weekdays = ["Paz", "Pzt", "Sal", "Çar", "Per", "Cum", "Cmt"];
 const fullDate = (date: string) =>
   parseDay(date).toLocaleDateString("tr-TR", {
@@ -108,6 +123,10 @@ export default function App() {
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [prioritySort, setPrioritySort] = useState(false);
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
+  const [statsDate, setStatsDate] = useState(dayKey());
+  const [labelPeriod, setLabelPeriod] = useState<
+    "day" | "today" | "week" | "fortnight"
+  >("day");
   const requestDelete: ConfirmRequest = (
     title,
     message,
@@ -166,7 +185,13 @@ export default function App() {
       cleanups.forEach((fn) => fn());
     };
   }, [reload]);
-  const focusTasks = snapshot ? focusCandidates(snapshot.data.tasks) : [];
+  const focusTasks = snapshot
+    ? focusCandidates(
+        snapshot.data.tasks,
+        dayKey(),
+        snapshot.data.suspendedWork,
+      )
+    : [];
   const lastWork = snapshot?.data.sessions
     .filter((session) => session.type === "work")
     .reduce<Session | undefined>(
@@ -181,6 +206,7 @@ export default function App() {
     lastWork && dayKey(new Date(lastWork.endedAt)) === dayKey()
       ? lastWork.taskId
       : null,
+    snapshot?.data.suspendedWork,
   );
   const selectedFocusTask =
     focusTasks.find((task) => task.id === focusTaskId) || suggestion;
@@ -191,6 +217,8 @@ export default function App() {
       );
   }, [lastWork?.id]);
   const chosenTask = selectedFocusTask;
+  const chosenPending =
+    selectedFocusTask && snapshot?.data.suspendedWork?.[selectedFocusTask.id];
   const chosenDuration =
     chosenTask && snapshot
       ? taskPomodoroMin(
@@ -263,6 +291,7 @@ export default function App() {
             e.preventDefault();
             const t = newTask();
             t.title = quickTitle;
+            t.kind = "list";
             t.label = quickLabel.trim();
             const validation =
               validatePomodoroMin(quickWork) || validateTask(t, true);
@@ -358,6 +387,20 @@ export default function App() {
   const active = timer.phase !== "idle";
   const activeTask = data.tasks.find((t) => t.id === timer.taskId);
   const summary = stats(data.sessions);
+  const labelStart =
+    labelPeriod === "day"
+      ? statsDate
+      : labelPeriod === "week"
+        ? summary.weekStart
+        : labelPeriod === "fortnight"
+          ? shiftDay(dayKey(), -13)
+          : dayKey();
+  const labelEnd = labelPeriod === "day" ? statsDate : dayKey();
+  const distribution = labelTotals(data.sessions, labelStart, labelEnd);
+  const distributionTotal = Object.values(distribution).reduce(
+    (sum, minutes) => sum + minutes,
+    0,
+  );
   const catalog = snapshot.labels ?? [
     ...new Map(
       data.tasks
@@ -394,17 +437,41 @@ export default function App() {
   const detailTask = data.tasks.find((task) => task.id === detailTaskId);
   let tasks =
     tab === "today"
-      ? tasksForDay(data.tasks, dayKey()).filter((t) => t.status === "active")
+      ? todayAgenda(data.tasks, dayKey(), data.suspendedWork)
       : tab === "list"
         ? data.tasks.filter(
             (t) =>
-              !t.scheduledDate && !t.recurrenceRule && t.status === "active",
+              ((!t.scheduledDate && taskKind(t) === "list") ||
+                !!data.suspendedWork?.[t.id]) &&
+              !isSeries(t) &&
+              t.status === "active" &&
+              !archivedOccurrence(t, data.tasks),
           )
         : tab === "completed"
           ? data.tasks
-              .filter((t) => t.status === "completed")
+              .filter(
+                (t) =>
+                  t.status === "completed" &&
+                  !(
+                    archivedOccurrence(t, data.tasks) &&
+                    data.tasks.some(
+                      (parent) =>
+                        parent.id === t.seriesId &&
+                        parent.status === "completed",
+                    )
+                  ),
+              )
               .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0))
-          : tasksForDay(data.tasks, day);
+          : tab === "deadline"
+            ? data.tasks.filter(
+                (t) =>
+                  taskKind(t) === "deadline" &&
+                  t.status === "active" &&
+                  !archivedOccurrence(t, data.tasks),
+              )
+            : tab === "recurring"
+              ? []
+              : tasksForDay(data.tasks, day);
   if (filter) tasks = tasks.filter((t) => t.label === filter);
   if (prioritySort && (tab === "today" || tab === "list"))
     tasks = [...tasks].sort(
@@ -412,9 +479,22 @@ export default function App() {
     );
   const add = () => {
     if (calendarReadOnly) return;
-    setEditor(
-      newTask(tab === "calendar" ? day : tab === "today" ? dayKey() : null),
-    );
+    setEditor({
+      ...newTask(tab === "calendar" ? day : tab === "today" ? dayKey() : null),
+      ...(tab === "deadline"
+        ? { kind: "deadline" as const }
+        : tab === "recurring"
+          ? {
+              kind: "recurring" as const,
+              scheduledDate: dayKey(),
+              recurrenceRule: {
+                frequency: "weekly" as const,
+                weekdays: [parseDay(dayKey()).getDay()],
+                monthDay: parseDay(dayKey()).getDate(),
+              },
+            }
+          : {}),
+    });
   };
   const move = (task: Task, date: string | null) => {
     if (date && date < dayKey()) {
@@ -429,7 +509,9 @@ export default function App() {
     });
   };
   const start = (taskId: string, usePanel = false) => {
-    const task = data.tasks.find((t) => t.id === taskId);
+    const task =
+      data.tasks.find((t) => t.id === taskId) ||
+      focusTasks.find((t) => t.id === taskId);
     const minutes =
       usePanel || !task
         ? work
@@ -445,8 +527,39 @@ export default function App() {
       setError("Çalışma 1–90, mola 1–30 dakika olmalı.");
       return;
     }
+    if (active) {
+      if (working && timer.taskId === taskId) return;
+      requestDelete(
+        "Başka göreve geçmek istiyor musun?",
+        working
+          ? `“${activeTask?.title || "Önceki iş"}” için ${formatElapsed(((timer.workBudgetMs ?? timer.plannedMin * 60000) - remaining) / 60000)} çalışıldı. ${clock(remaining)} kaldı. Onay anına kadar çalışılan süre grafiğe kaydedilir; kalan süre saklanır ve “${task?.title || "Yeni iş"}” başlar.`
+          : `Mola kapanır ve “${task?.title || "Yeni iş"}” başlar. Önceki çalışma süresi korunur; görev kendiliğinden tamamlanmaz.`,
+        async () => {
+          const switched = await run("switch_task", {
+            confirmed: true,
+            fromTaskId: timer.taskId,
+            startedAt: timer.startedAt,
+            taskId,
+            workMin: minutes,
+            breakMin: rest,
+          });
+          if (switched) {
+            setFocusTaskId(taskId);
+            if (tab !== "today" && tab !== "list") setTab("today");
+          }
+          return switched;
+        },
+        { confirmLabel: "Tamam, göreve geç", positive: true },
+      );
+      return;
+    }
     setFocusTaskId(taskId);
-    return run("start", { taskId, workMin: minutes, breakMin: rest });
+    return run("start", { taskId, workMin: minutes, breakMin: rest }).then(
+      (started) => {
+        if (started && tab !== "today" && tab !== "list") setTab("today");
+        return started;
+      },
+    );
   };
   return (
     <div className="app-shell">
@@ -481,6 +594,8 @@ export default function App() {
             ["today", "Bugün", Sun],
             ["list", "Liste", List],
             ["calendar", "Takvim", CalendarDays],
+            ["deadline", "Son tarihli", Bell],
+            ["recurring", "Tekrarlayan", Repeat],
             ["completed", "Tamamlanan", Check],
           ] as const
         ).map(([id, name, Icon]) => (
@@ -523,7 +638,7 @@ export default function App() {
             {notice}
           </div>
         )}
-        {tab !== "settings" && tab !== "stats" && (
+        {tab !== "settings" && tab !== "stats" && tab !== "data" && (
           <>
             {(tab === "today" || tab === "list") && (
               <section
@@ -563,7 +678,7 @@ export default function App() {
                         ? clock(remaining)
                         : timer.breakReady && !selectedFocusTask
                           ? "00:00"
-                          : clock(work * 60000)}
+                          : clock(chosenPending?.remainingMs ?? work * 60000)}
                     </div>
                   </div>
                   <div className="timer-controls">
@@ -748,7 +863,7 @@ export default function App() {
                         min="1"
                         max="90"
                         value={work}
-                        disabled={active}
+                        disabled={active || !!chosenPending}
                         onChange={(e) => {
                           const n = Number(e.target.value);
                           setWork(n);
@@ -805,7 +920,11 @@ export default function App() {
                         ? "KENDİ RİTMİNDE PLANLA"
                         : tab === "completed"
                           ? "BİTİRDİKLERİN BİRİKİYOR"
-                          : "AKLINDA KALMASIN"}
+                          : tab === "deadline"
+                            ? "BİTİNCE YENİDEN GELMEZ"
+                            : tab === "recurring"
+                              ? "HER TEKRAR AYRI BİR İŞ"
+                              : "AKLINDA KALMASIN"}
                   </div>
                   <h1>
                     {tab === "today"
@@ -814,7 +933,11 @@ export default function App() {
                         ? "Görev listesi"
                         : tab === "completed"
                           ? "Tamamlanan görevler"
-                          : "Takvim"}
+                          : tab === "deadline"
+                            ? "Son tarihli işler"
+                            : tab === "recurring"
+                              ? "Tekrarlayan işler"
+                              : "Takvim"}
                   </h1>
                 </div>
                 {!calendarReadOnly && (
@@ -929,7 +1052,10 @@ export default function App() {
               )}
               <div className="list-toolbar">
                 <span>
-                  {tasks.length} görev
+                  {tab === "recurring"
+                    ? data.tasks.filter(isSeries).length
+                    : tasks.length}{" "}
+                  {tab === "recurring" ? "seri" : "görev"}
                   {tab === "calendar" ? " · tamamlananlar dahil" : ""}
                 </span>
                 <div className="list-filters">
@@ -966,6 +1092,7 @@ export default function App() {
                       key={task.id}
                       task={task}
                       sessions={data.sessions}
+                      allTasks={data.tasks}
                       priority={priorityFor(task, priorities)}
                       pomodoroMin={taskPomodoroMin(
                         task,
@@ -985,33 +1112,42 @@ export default function App() {
                       key={task.id}
                       task={task}
                       sessions={data.sessions}
+                      allTasks={data.tasks}
                       readOnly={calendarReadOnly}
                       priority={priorityFor(task, priorities)}
                       onPriority={(rating) =>
                         run("set_priority", { id: task.id, rating })
                       }
-                      canStart={!active && !isPastTask(task)}
+                      canStart={
+                        (!isPastTask(task) ||
+                          !!data.suspendedWork?.[task.id]) &&
+                        !(working && timer.taskId === task.id)
+                      }
                       busy={busy}
                       selected={
                         selectedFocusTask?.id === task.id ||
                         (working && activeTask?.id === task.id)
                       }
                       onSelect={
-                        tab === "today" || tab === "list"
+                        tab === "today" || tab === "list" || tab === "deadline"
                           ? () => {
                               if (working) {
                                 setNotice(
-                                  "Çalışan oturumun görevi değiştirilemez. Yeni görevi oturum bitince seçebilirsin.",
+                                  "Görev değiştirmek için yeni işin ▶ düğmesine bas. Onayından sonra çalışılan süre kaydedilir ve kalan süre saklanır.",
                                 );
                                 return;
                               }
-                              if (isPastTask(task)) {
+                              if (
+                                isPastTask(task) &&
+                                !data.suspendedWork?.[task.id]
+                              ) {
                                 setNotice(
                                   "Geçmiş günün görevi seçilemez. Önce bugüne veya ileri bir güne taşı.",
                                 );
                                 return;
                               }
                               setFocusTaskId(task.id);
+                              if (tab === "deadline") setTab("today");
                               document
                                 .querySelector(".timer-card")
                                 ?.scrollIntoView({
@@ -1021,8 +1157,35 @@ export default function App() {
                             }
                           : undefined
                       }
-                      onToggle={() => run("toggle_task", { id: task.id })}
-                      onEdit={() => setEditor(cloneTask(task))}
+                      onToggle={() =>
+                        data.suspendedWork?.[task.id]
+                          ? requestDelete(
+                              "Bekleyen oturum kapatılıp görev tamamlansın mı?",
+                              "Kalan oturum kapatılır; daha önce kaydedilmiş çalışma süresi korunur. Görevi geri açarsan yeni oturum normal süreden başlar.",
+                              () =>
+                                run("toggle_task", {
+                                  id: task.id,
+                                  confirmed: true,
+                                }),
+                              { positive: true, confirmLabel: "Evet, tamamla" },
+                            )
+                          : run("toggle_task", { id: task.id })
+                      }
+                      onEdit={() =>
+                        setEditor(
+                          cloneTask(
+                            data.tasks.find(
+                              (parent) =>
+                                parent.id === task.seriesId && isSeries(parent),
+                            ) || task,
+                          ),
+                        )
+                      }
+                      pendingMs={
+                        working && timer.taskId === task.id
+                          ? remaining
+                          : data.suspendedWork?.[task.id]?.remainingMs
+                      }
                       onStart={() => start(task.id)}
                       onMove={(date) => move(task, date)}
                       onSubtask={(id, done) =>
@@ -1035,7 +1198,7 @@ export default function App() {
                     />
                   ),
                 )}
-                {!tasks.length && (
+                {!tasks.length && tab !== "recurring" && (
                   <div className="empty-state">
                     <span>
                       <Leaf size={25} />
@@ -1070,7 +1233,7 @@ export default function App() {
                   filter={filter}
                 />
               )}
-              {tab === "list" && data.tasks.some((t) => t.recurrenceRule) && (
+              {tab === "recurring" && (
                 <div className="series-list">
                   <h3>
                     <Repeat size={15} />
@@ -1078,8 +1241,7 @@ export default function App() {
                   </h3>
                   {data.tasks
                     .filter(
-                      (t) =>
-                        t.recurrenceRule && (!filter || t.label === filter),
+                      (t) => isSeries(t) && (!filter || t.label === filter),
                     )
                     .map((t) => (
                       <article className="series-row" key={t.id}>
@@ -1108,6 +1270,11 @@ export default function App() {
                                   : "Her ay"}{" "}
                               · Düzenle
                             </span>
+                            {!t.kind && t.dueAt && (
+                              <span className="legacy-kind-badge">
+                                Eski karma görev · türünü seç
+                              </span>
+                            )}
                           </div>
                         </div>
                         <PriorityStars
@@ -1130,7 +1297,8 @@ export default function App() {
             <div className="eyebrow muted">ZAMANININ İZİ</div>
             <h1>Odak istatistikleri</h1>
             <p className="muted">
-              Yalnızca bitirdiğin çalışma oturumları sayılır.
+              Kaydedilen gerçek çalışma süreleri sayılır; molalar dahil
+              değildir.
             </p>
             <div className="stat-cards">
               <div>
@@ -1166,9 +1334,39 @@ export default function App() {
                 );
               })}
             </div>
-            <FocusTrend sessions={data.sessions} />
-            <h3>Etikete göre · bu hafta</h3>
-            {Object.entries(summary.labels)
+            <FocusTrend
+              sessions={data.sessions}
+              selectedDate={statsDate}
+              onSelect={(date) => {
+                setStatsDate(date);
+                setLabelPeriod("day");
+              }}
+            />
+            <div className="label-distribution-heading">
+              <h3>
+                Etikete göre ·{" "}
+                {labelPeriod === "day"
+                  ? fullDate(statsDate)
+                  : labelPeriod === "today"
+                    ? "Bugün"
+                    : labelPeriod === "week"
+                      ? "Bu hafta"
+                      : "Son 2 hafta"}
+              </h3>
+              <select
+                aria-label="Etiket dağılımı dönemi"
+                value={labelPeriod}
+                onChange={(event) =>
+                  setLabelPeriod(event.target.value as typeof labelPeriod)
+                }
+              >
+                <option value="day">Seçilen gün</option>
+                <option value="today">Bugün</option>
+                <option value="week">Bu hafta</option>
+                <option value="fortnight">Son 2 hafta</option>
+              </select>
+            </div>
+            {Object.entries(distribution)
               .sort((a, b) => b[1] - a[1])
               .map(([label, min]) => (
                 <div className="label-stat" key={label}>
@@ -1176,7 +1374,7 @@ export default function App() {
                   <div>
                     <i
                       style={{
-                        width: `${(min / Math.max(1, summary.weekly)) * 100}%`,
+                        width: `${distributionTotal > 0 ? (min / distributionTotal) * 100 : 0}%`,
                         background:
                           data.tasks.find((t) => t.label === label)?.color ||
                           "#438470",
@@ -1186,7 +1384,7 @@ export default function App() {
                   <strong>{formatMinutes(min)}</strong>
                 </div>
               ))}
-            {!summary.weekly && (
+            {!distributionTotal && (
               <p className="muted">
                 İlk odak oturumundan sonra dağılım burada görünecek.
               </p>
@@ -1240,13 +1438,22 @@ export default function App() {
             }}
           />
         )}
+        {tab === "settings" && (
+          <button className="database-open" onClick={() => setTab("data")}>
+            <List size={16} />
+            Veritabanını incele · salt okunur
+          </button>
+        )}
+        {tab === "data" && (
+          <DatabaseInspector onBack={() => setTab("settings")} />
+        )}
       </main>
       <footer className="app-footer">
         <span>
           <Leaf size={12} />
           Bir seferde bir iş.
         </span>
-        {!calendarReadOnly && (
+        {!calendarReadOnly && tab !== "data" && (
           <button
             onClick={() => setEditor(newTask(tab === "calendar" ? day : null))}
           >
@@ -1289,6 +1496,9 @@ export default function App() {
                   ...(isNew || minutes !== previousMinutes
                     ? { pomodoroMin: minutes }
                     : {}),
+                  confirmedSeriesChange:
+                    isSeries(editor) ||
+                    (t.status === "completed" && !!data.suspendedWork?.[t.id]),
                 }))
               )
                 return false;
@@ -1302,10 +1512,21 @@ export default function App() {
               setFocusTaskId(t.id);
               return true;
             };
-            if (editor.recurrenceRule && !t.recurrenceRule)
+            if (
+              isSeries(editor) ||
+              (t.status === "completed" && !!data.suspendedWork?.[t.id])
+            )
               requestDelete(
-                "Tekrar kuralını kaldırmak istiyor musun?",
-                "Gelecekteki başlanmamış tekrarlar kaldırılır. Tamamlanan ve başlanmış geçmiş korunur.",
+                t.kind === "deadline"
+                  ? "Son tarihli tek işe çevirmek istiyor musun?"
+                  : isSeries(editor)
+                    ? "Tekrar serisi güncellensin mi?"
+                    : "Bekleyen oturum kapatılıp görev tamamlanacak mı?",
+                t.kind === "deadline"
+                  ? "Eski günlerin kayıtları silinmez. Yeni tekrar üretilmez; iş tamamlanınca sonraki günlerde görünmez."
+                  : isSeries(editor)
+                    ? "Gelecekteki başlanmamış örnekler silinip güncel kuralla yeniden oluşturulabilir. Tamamlanan ve başlanmış geçmiş korunur. Serinin yıldızı bütün günlere uygulanır."
+                    : "Bekleyen kalan süre kapanır; kaydedilmiş çalışma süresi korunur ve görev tamamlananlara taşınır.",
                 save,
               );
             else await save();
@@ -1343,6 +1564,7 @@ export default function App() {
         <CompletedTaskDetails
           task={detailTask}
           sessions={data.sessions}
+          allTasks={data.tasks}
           priority={priorityFor(detailTask, priorities)}
           pomodoroMin={taskPomodoroMin(
             detailTask,
@@ -1422,6 +1644,7 @@ function FocusChecklist({
 function CompletedTaskCard({
   task,
   sessions,
+  allTasks,
   priority,
   pomodoroMin,
   busy,
@@ -1430,13 +1653,14 @@ function CompletedTaskCard({
 }: {
   task: Task;
   sessions: Session[];
+  allTasks: Task[];
   priority: number;
   pomodoroMin: number;
   busy: boolean;
   onDetail: () => void;
   onRestore?: () => void;
 }) {
-  const { work, totalMin, last } = taskWorkSummary(task.id, sessions);
+  const { work, totalMin, last } = taskWorkSummary(task.id, sessions, allTasks);
   return (
     <article
       className="task-row completed completed-card"
@@ -1538,9 +1762,13 @@ function CompletedTaskCard({
           <>
             Son oturum: {formatElapsed(last.actualMin)} /{" "}
             {formatMinutes(last.plannedMin)}
-            {last.actualMin < last.plannedMin
-              ? " · Erken bitirildi"
-              : " · Süresi doldu"}
+            {last.outcome === "switched"
+              ? " · Görev değiştirildi"
+              : last.outcome === "elapsed"
+                ? " · Süresi doldu"
+                : last.actualMin < last.plannedMin
+                  ? " · Erken bitirildi"
+                  : " · Süresi doldu"}
           </>
         ) : (
           "Odak kaydı yok · Tamamlama süre eklemez"
@@ -1553,12 +1781,14 @@ function CompletedTaskCard({
 function CompletedTaskDetails({
   task,
   sessions,
+  allTasks,
   priority,
   pomodoroMin,
   onClose,
 }: {
   task: Task;
   sessions: Session[];
+  allTasks: Task[];
   priority: number;
   pomodoroMin: number;
   onClose: () => void;
@@ -1580,7 +1810,7 @@ function CompletedTaskDetails({
       previous?.focus();
     };
   }, [onClose]);
-  const { work, totalMin, last } = taskWorkSummary(task.id, sessions);
+  const { work, totalMin, last } = taskWorkSummary(task.id, sessions, allTasks);
   const stamp = (value: number) =>
     new Date(value).toLocaleString("tr-TR", {
       day: "numeric",
@@ -1713,9 +1943,13 @@ function CompletedTaskDetails({
                   <small>{stamp(session.endedAt)}</small>
                 </div>
                 <span>
-                  {session.actualMin < session.plannedMin
-                    ? "Erken bitirildi"
-                    : "Süresi doldu"}
+                  {session.outcome === "switched"
+                    ? "Görev değiştirildi"
+                    : session.outcome === "elapsed"
+                      ? "Süresi doldu"
+                      : session.actualMin < session.plannedMin
+                        ? "Erken bitirildi"
+                        : "Süresi doldu"}
                 </span>
               </div>
             ))
@@ -1736,6 +1970,7 @@ function TaskRow({
   onPriority,
   task,
   sessions,
+  allTasks,
   canStart,
   busy,
   onToggle,
@@ -1745,12 +1980,14 @@ function TaskRow({
   onSubtask,
   onSelect,
   selected,
+  pendingMs,
 }: {
   readOnly: boolean;
   priority: number;
   onPriority: (rating: number) => void;
   task: Task;
   sessions: Snapshot["data"]["sessions"];
+  allTasks: Task[];
   canStart: boolean;
   busy: boolean;
   onToggle: () => void;
@@ -1760,10 +1997,11 @@ function TaskRow({
   onSubtask: (id: string, done: boolean) => void;
   onSelect?: () => void;
   selected: boolean;
+  pendingMs?: number;
 }) {
   const [menu, setMenu] = useState(false);
   const completed = task.status === "completed";
-  const total = spent(task.id, sessions);
+  const total = taskWorkSummary(task.id, sessions, allTasks).totalMin;
   const allDone =
     task.subtasks.length > 0 && task.subtasks.every((s) => s.done);
   return (
@@ -1823,6 +2061,12 @@ function TaskRow({
             onChange={onPriority}
           />
           <div className="task-meta">
+            {pendingMs !== undefined && (
+              <span className="resume-tag">
+                <RotateCcw size={12} />
+                {clock(pendingMs)} kaldı
+              </span>
+            )}
             {task.label && (
               <span className="label-tag" style={{ color: task.color }}>
                 <i style={{ background: task.color }} />
@@ -1844,7 +2088,7 @@ function TaskRow({
                 {timeString(task.startAt)}–{timeString(task.endAt)}
               </span>
             )}
-            {task.dueAt && (
+            {task.dueAt && taskKind(task) !== "recurring" && (
               <span>
                 <Bell size={12} />
                 Bitiş{" "}
@@ -1994,6 +2238,12 @@ function TaskEditor({
   const [task, setTask] = useState(initial),
     [validation, setValidation] = useState(""),
     [subtask, setSubtask] = useState("");
+  const legacyMixed =
+    !initial.kind && !!initial.recurrenceRule && !!initial.dueAt;
+  const [kind, setKind] = useState<
+    "list" | "deadline" | "recurring" | "legacy"
+  >(legacyMixed ? "legacy" : taskKind(initial));
+  const [finishedAlready, setFinishedAlready] = useState(false);
   const [rating, setRating] = useState(priority);
   const [minutes, setMinutes] = useState<number | string>(pomodoroMin);
   const patch = (p: Partial<Task>) => setTask((t) => ({ ...t, ...p }));
@@ -2005,29 +2255,32 @@ function TaskEditor({
     return () => document.removeEventListener("keydown", handler);
   }, [onClose]);
   const save = async () => {
+    if (kind === "legacy") {
+      setValidation("Bu eski işin türünü seç: son tarihli veya tekrarlayan.");
+      return;
+    }
+    const nextTask = {
+      ...task,
+      ...(!onDelete || initial.kind || legacyMixed || kind !== taskKind(initial)
+        ? { kind }
+        : {}),
+      ...(finishedAlready && kind === "deadline"
+        ? { status: "completed" as const, completedAt: Date.now() }
+        : {}),
+    };
     const message =
       validatePomodoroMin(minutes) ||
-      validateTask(task, true) ||
-      validatePlanningChange(task, onDelete ? initial : undefined);
+      validateTask(nextTask, true) ||
+      validatePlanningChange(nextTask, onDelete ? initial : undefined);
     if (message) {
       setValidation(message);
       return;
     }
     await onSave(
-      { ...task, title: task.title.trim() },
+      { ...nextTask, title: task.title.trim() },
       rating,
       Number(minutes),
     );
-  };
-  const changeDate = (value: string) => {
-    const date = value || null;
-    const change = (ms: number | null) =>
-      date && ms ? new Date(`${date}T${timeString(ms)}`).getTime() : null;
-    patch({
-      scheduledDate: date,
-      startAt: change(task.startAt),
-      endAt: change(task.endAt),
-    });
   };
   return (
     <div
@@ -2133,129 +2386,111 @@ function TaskEditor({
               />
             </label>
           </div>
-          <div className="field-grid">
-            <label className="field">
-              Gün <span>İsteğe bağlı</span>
-              <input
-                aria-label="Gün"
-                min={
-                  initial.scheduledDate && initial.scheduledDate < dayKey()
-                    ? initial.scheduledDate
-                    : dayKey()
-                }
-                required={!!task.recurrenceRule}
-                className={task.recurrenceRule ? "required-field" : ""}
-                type="date"
-                value={task.scheduledDate || ""}
-                onChange={(e) => changeDate(e.target.value)}
-              />
-            </label>
-            <label className="field">
-              Toplam iş tahmini <span>İsteğe bağlı · dakika</span>
-              <input
-                aria-label="Tahmini süre"
-                type="number"
-                min="1"
-                max="100000"
-                placeholder="Süresiz bırakabilirsin"
-                value={task.estimateMin || ""}
-                onChange={(e) =>
-                  patch({
-                    estimateMin: e.target.value ? Number(e.target.value) : null,
-                  })
-                }
-              />
-            </label>
-          </div>
-          <div className="field-grid">
-            <label className="field">
-              Başlangıç saati
-              <input
-                aria-label="Başlangıç saati"
-                required={task.endAt !== null}
-                className={task.endAt !== null ? "required-field" : ""}
-                type="time"
-                disabled={!task.scheduledDate}
-                value={timeString(task.startAt)}
-                onChange={(e) =>
-                  patch({
-                    startAt:
-                      e.target.value && task.scheduledDate
-                        ? new Date(
-                            `${task.scheduledDate}T${e.target.value}`,
-                          ).getTime()
-                        : null,
-                  })
-                }
-              />
-            </label>
-            <label className="field">
-              Bitiş saati
-              <input
-                aria-label="Bitiş saati"
-                required={task.startAt !== null}
-                className={task.startAt !== null ? "required-field" : ""}
-                type="time"
-                disabled={!task.scheduledDate}
-                value={timeString(task.endAt)}
-                onChange={(e) =>
-                  patch({
-                    endAt:
-                      e.target.value && task.scheduledDate
-                        ? new Date(
-                            `${task.scheduledDate}T${e.target.value}`,
-                          ).getTime()
-                        : null,
-                  })
-                }
-              />
-            </label>
-          </div>
           <label className="field">
-            Son bitirme zamanı <span>İsteğe bağlı</span>
-            <input
-              aria-label="Son bitirme zamanı"
-              type="datetime-local"
-              value={localInput(task.dueAt)}
-              onChange={(e) =>
-                patch({
-                  dueAt: e.target.value
-                    ? new Date(e.target.value).getTime()
-                    : null,
-                })
-              }
-            />
+            Görev türü <span>Zorunlu</span>
+            <select
+              aria-label="Görev türü"
+              value={kind}
+              onChange={(event) => {
+                const selected = event.target.value as
+                  "list" | "deadline" | "recurring";
+                setKind(selected);
+                if (selected === "recurring" && !task.recurrenceRule)
+                  patch({
+                    scheduledDate: task.scheduledDate || defaultDay,
+                    recurrenceRule: {
+                      frequency: "weekly",
+                      weekdays: [parseDay(defaultDay).getDay()],
+                      monthDay: parseDay(defaultDay).getDate(),
+                    },
+                  });
+              }}
+            >
+              {legacyMixed && (
+                <option value="legacy">Eski karma görev · türünü seç</option>
+              )}
+              {!initial.recurrenceRule && (
+                <option value="list">Liste · tek seferlik iş</option>
+              )}
+              <option value="deadline">
+                Son tarihli · bitince tekrar gelmez
+              </option>
+              <option value="recurring">Tekrarlayan · her dönem ayrı iş</option>
+            </select>
           </label>
-          {!task.seriesId && (
+          {legacyMixed && (
+            <p className="legacy-kind-message">
+              Bu eski işte hem son tarih hem tekrar kuralı kayıtlı. Tek iş mi,
+              her dönem yeniden yapılacak iş mi olduğunu seç. Eski günlerin
+              kayıtları korunur.
+            </p>
+          )}
+          {kind === "deadline" && (
             <>
               <label className="field">
-                Tekrar
-                <select
-                  aria-label="Tekrar"
-                  value={task.recurrenceRule?.frequency || ""}
-                  onChange={(e) =>
+                Son bitirme tarihi <span>Zorunlu</span>
+                <input
+                  aria-label="Son bitirme tarihi"
+                  required
+                  className="required-field"
+                  type="datetime-local"
+                  value={localInput(task.dueAt)}
+                  onChange={(event) =>
                     patch({
-                      scheduledDate: e.target.value
-                        ? task.scheduledDate || defaultDay
-                        : task.scheduledDate,
-                      recurrenceRule: e.target.value
-                        ? {
-                            frequency: e.target.value as
-                              "daily" | "weekly" | "monthly",
-                            weekdays: [
-                              parseDay(
-                                task.scheduledDate || defaultDay,
-                              ).getDay(),
-                            ],
-                            monthDay: parseDay(
-                              task.scheduledDate || defaultDay,
-                            ).getDate(),
-                          }
+                      dueAt: event.target.value
+                        ? new Date(event.target.value).getTime()
                         : null,
                     })
                   }
+                />
+              </label>
+              <small className="muted">
+                Bu iş bugün ilerletilebilir; tamamlanınca gelecekte yeniden
+                çıkmaz.
+              </small>
+              {initial.recurrenceRule && (
+                <label className="switch-row">
+                  <span>
+                    Bu iş zaten tamamlandı
+                    <small>
+                      İşi tamamlananlara taşır; yapay odak süresi eklemez.
+                    </small>
+                  </span>
+                  <input
+                    aria-label="Bu iş zaten tamamlandı"
+                    type="checkbox"
+                    checked={finishedAlready}
+                    onChange={(event) =>
+                      setFinishedAlready(event.target.checked)
+                    }
+                  />
+                </label>
+              )}
+            </>
+          )}
+          {kind === "recurring" && (
+            <>
+              <label className="field">
+                Tekrar kuralı
+                <select
+                  aria-label="Tekrar"
+                  value={task.recurrenceRule?.frequency || "weekly"}
+                  onChange={(event) =>
+                    patch({
+                      scheduledDate: task.scheduledDate || defaultDay,
+                      recurrenceRule: {
+                        frequency: event.target.value as
+                          "daily" | "weekly" | "monthly",
+                        weekdays: task.recurrenceRule?.weekdays.length
+                          ? task.recurrenceRule.weekdays
+                          : [parseDay(defaultDay).getDay()],
+                        monthDay:
+                          task.recurrenceRule?.monthDay ||
+                          parseDay(defaultDay).getDate(),
+                      },
+                    })
+                  }
                 >
-                  <option value="">Tekrarlama</option>
                   <option value="daily">Her gün</option>
                   <option value="weekly">Her hafta · seçili günler</option>
                   <option value="monthly">Her ay</option>
@@ -2263,25 +2498,25 @@ function TaskEditor({
               </label>
               {task.recurrenceRule?.frequency === "weekly" && (
                 <div className="weekday-selector">
-                  {weekdays.map((d, i) => (
-                    <label key={d}>
+                  {weekdays.map((name, index) => (
+                    <label key={name}>
                       <input
                         type="checkbox"
-                        checked={task.recurrenceRule!.weekdays.includes(i)}
-                        onChange={(e) =>
+                        checked={task.recurrenceRule!.weekdays.includes(index)}
+                        onChange={(event) =>
                           patch({
                             recurrenceRule: {
                               ...task.recurrenceRule!,
-                              weekdays: e.target.checked
-                                ? [...task.recurrenceRule!.weekdays, i]
+                              weekdays: event.target.checked
+                                ? [...task.recurrenceRule!.weekdays, index]
                                 : task.recurrenceRule!.weekdays.filter(
-                                    (n) => n !== i,
+                                    (day) => day !== index,
                                   ),
                             },
                           })
                         }
                       />
-                      {d}
+                      {name}
                     </label>
                   ))}
                 </div>
@@ -2295,17 +2530,21 @@ function TaskEditor({
                     min="1"
                     max="31"
                     value={task.recurrenceRule.monthDay}
-                    onChange={(e) =>
+                    onChange={(event) =>
                       patch({
                         recurrenceRule: {
                           ...task.recurrenceRule!,
-                          monthDay: Number(e.target.value),
+                          monthDay: Number(event.target.value),
                         },
                       })
                     }
                   />
                 </label>
               )}
+              <small className="muted">
+                Bir dönemi tamamlamak seriyi bitirmez. Yıldız ve pomodoro süresi
+                seriden sonraki dönemlere taşınır.
+              </small>
             </>
           )}
           <label className="field">
@@ -2804,9 +3043,16 @@ function SessionHistory({
   );
 }
 
-function FocusTrend({ sessions }: { sessions: Session[] }) {
+function FocusTrend({
+  sessions,
+  selectedDate,
+  onSelect,
+}: {
+  sessions: Session[];
+  selectedDate: string;
+  onSelect: (date: string) => void;
+}) {
   const days = dailyTrend(sessions);
-  const [selectedDate, setSelectedDate] = useState(dayKey());
   const selected =
     days.find((d) => d.date === selectedDate) || days[days.length - 1];
   const maximum = Math.max(60, ...days.map((d) => d.minutes));
@@ -2860,11 +3106,11 @@ function FocusTrend({ sessions }: { sessions: Session[] }) {
               tabIndex={0}
               aria-label={`${fullDate(d.date)}: ${formatMinutes(d.minutes)}`}
               aria-pressed={d.date === selected.date}
-              onClick={() => setSelectedDate(d.date)}
+              onClick={() => onSelect(d.date)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
-                  setSelectedDate(d.date);
+                  onSelect(d.date);
                 }
               }}
             >

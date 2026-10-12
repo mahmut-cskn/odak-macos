@@ -22,7 +22,8 @@ class BackupTests(unittest.TestCase):
             task = {"id": "existing", "title": "Do not change", "unknownFutureField": "preserve me"}
             timer = {"phase": "work", "startedAt": 12345678, "taskId": "existing", "pausedAccumulatedMs": 3900}
             writer.execute("INSERT INTO tasks VALUES (?,?)", ("existing", json.dumps(task)))
-            for key, payload in {"timer": timer, "settings": {"quietMode": True}, "notified": ["sent"]}.items():
+            suspended = {"existing": {"remainingMs": 1050000, "plannedMin": 45}}
+            for key, payload in {"timer": timer, "settings": {"quietMode": True}, "notified": ["sent"], "suspendedWork": suspended, "priorities": {"existing": 4}}.items():
                 writer.execute("INSERT INTO meta VALUES (?,?)", (key, json.dumps(payload)))
             writer.commit()
             before = list(writer.execute("SELECT * FROM tasks")), list(writer.execute("SELECT * FROM meta"))
@@ -38,9 +39,11 @@ class BackupTests(unittest.TestCase):
                 self.assertEqual(json.loads(archive.read("task-durations.json")), {"existing": 30, "removed": 15})
                 envelope = json.loads(archive.read("odak-yedek.json"))
                 self.assertEqual(envelope["taskDurations"], {"existing": 30})
+                self.assertEqual(envelope["priorities"], {"existing": 4})
                 data = envelope["data"]
                 self.assertEqual(data["timer"], timer)
                 self.assertEqual(data["tasks"], [task])
+                self.assertEqual(data["suspendedWork"], suspended)
                 archive.extract("odak.sqlite3", root / "restored")
             restored = sqlite3.connect(root / "restored/odak.sqlite3")
             self.assertEqual(restored.execute("PRAGMA integrity_check").fetchone()[0], "ok")

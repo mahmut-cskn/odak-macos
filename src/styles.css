@@ -156,12 +156,14 @@ p {
   color: var(--green);
 }
 .tabs {
+  overflow-x: auto;
   margin: 0 32px;
   border-bottom: 1px solid var(--line);
   display: flex;
   gap: 14px;
 }
 .tabs button {
+  flex-shrink: 0;
   color: var(--muted);
   font-size: 13px;
   border-radius: 0;
@@ -689,6 +691,124 @@ main {
 }
 .task-actions button {
   padding: 6px;
+}
+.task-actions button[title="Pomodoro başlat"] {
+  border: 1px solid var(--green);
+  background: var(--soft);
+  color: var(--green);
+  width: 31px;
+  height: 31px;
+}
+.task-meta .resume-tag {
+  color: var(--green);
+  border: 1px solid var(--card-line);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-weight: 600;
+}
+.legacy-kind-badge,
+.legacy-kind-message {
+  color: var(--red);
+}
+.legacy-kind-message {
+  font-size: 12px;
+  background: var(--soft);
+  border: 1px solid var(--card-line);
+  padding: 12px;
+  border-radius: 8px;
+}
+.label-distribution-heading,
+.inspection-heading,
+.inspection-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.label-distribution-heading h3 {
+  margin-right: auto;
+}
+.label-distribution-heading select {
+  font-size: 11px;
+  padding: 7px 9px;
+}
+.database-open {
+  border: 1px solid var(--card-line);
+  color: var(--green);
+  padding: 12px;
+  margin-top: 16px;
+  width: 100%;
+}
+.database-inspector p {
+  font-size: 12px;
+}
+.inspection-heading button {
+  color: var(--green);
+}
+.inspection-proof {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 15px 0;
+  font-size: 12px;
+}
+.inspection-proof span {
+  border: 1px solid var(--card-line);
+  padding: 9px;
+  border-radius: 8px;
+  background: var(--surface);
+}
+.inspection-toolbar {
+  margin: 16px 0;
+}
+.database-inspector .database-path,
+.inspection-timestamp {
+  display: block;
+  overflow-wrap: anywhere;
+  margin-top: 8px;
+}
+.inspection-toolbar input {
+  flex: 1;
+  font-size: 11px;
+}
+.inspection-toolbar select {
+  font-size: 11px;
+}
+.inspection-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--card-line);
+  border-radius: 9px;
+  margin-bottom: 12px;
+}
+.inspection-table-wrap table {
+  border-collapse: collapse;
+  font-size: 10px;
+  width: 100%;
+  background: var(--surface);
+}
+.inspection-table-wrap th,
+.inspection-table-wrap td {
+  padding: 9px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.inspection-table-wrap th {
+  font-weight: 600;
+  color: var(--green);
+}
+.record-id {
+  font-family: monospace;
+  max-width: 130px;
+  overflow-wrap: anywhere;
+}
+.inspection-table-wrap pre {
+  width: 230px;
+  max-height: 250px;
+  overflow: auto;
+  font-size: 10px;
 }
 .task-note {
   margin: 9px 0 0 32px;

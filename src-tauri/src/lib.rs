@@ -45,7 +45,7 @@ impl Core {
         }
     }
     fn commit(&mut self, next: Data) -> Result<(), String> {
-        storage::save(&mut self.conn, &next)?;
+        storage::save_with_priorities(&mut self.conn, &next, Some(&self.priorities))?;
         self.data = next;
         Ok(())
     }
@@ -128,6 +128,19 @@ fn snapshot(state: State<AppState>) -> Result<Snapshot, String> {
     let c = state.0.lock().map_err(|e| e.to_string())?;
     Ok(c.snapshot())
 }
+#[tauri::command]
+fn inspect_database(state: State<AppState>) -> Result<Value, String> {
+    let core = state.0.lock().map_err(|e| e.to_string())?;
+    let data = storage::load(&core.conn)?;
+    let saved: Option<priorities::Priorities> = storage::read_meta(&core.conn, "priorities")?;
+    let integrity: String = core
+        .conn
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    Ok(
+        json!({"data":data,"priorities":saved.as_ref().unwrap_or(&core.priorities),"prioritySource":if saved.is_some(){"SQLite"}else{"JSON · eski kayıt"},"databasePath":core.path.to_string_lossy(),"integrity":integrity,"inspectedAt":Local::now().timestamp_millis(),"taskDurations":core.durations.0}),
+    )
+}
 fn execute(
     app: tauri::AppHandle,
     state: State<AppState>,
@@ -136,7 +149,7 @@ fn execute(
 ) -> Result<Snapshot, String> {
     if matches!(
         action.as_str(),
-        "delete_task" | "delete_label" | "cancel" | "finish"
+        "delete_task" | "delete_label" | "cancel" | "finish" | "switch_task"
     ) && payload["confirmed"].as_bool() != Some(true)
     {
         return Err("Bu işlem için önce onay verin.".into());
@@ -159,6 +172,34 @@ fn execute(
         None
     };
     let mut core = state.0.lock().map_err(|e| e.to_string())?;
+    if action == "switch_task" {
+        let now = Local::now().timestamp_millis();
+        let mut next = core.data.clone();
+        switch_focus(
+            &mut next,
+            payload["fromTaskId"]
+                .as_str()
+                .ok_or("Önceki görev eksik.")?,
+            payload["startedAt"]
+                .as_i64()
+                .ok_or("Oturum başlangıcı eksik.")?,
+            payload["taskId"].as_str().ok_or("Yeni görev eksik.")?,
+            payload["workMin"]
+                .as_u64()
+                .filter(|m| (1..=90).contains(m))
+                .ok_or("Çalışma süresi geçersiz.")? as u32,
+            payload["breakMin"]
+                .as_u64()
+                .filter(|m| (1..=30).contains(m))
+                .ok_or("Mola süresi geçersiz.")? as u32,
+            now,
+        )?;
+        core.commit(next)?;
+        let snapshot = core.snapshot();
+        drop(core);
+        let _ = app.emit("data-changed", ());
+        return Ok(snapshot);
+    }
     if action == "finish" {
         let task_id = payload["taskId"].as_str().ok_or("Görev bulunamadı.")?;
         let stamp = payload.get("startedAt").ok_or("Oturum başlangıcı eksik.")?;
@@ -180,17 +221,34 @@ fn execute(
     }
     if action == "set_priority" {
         let id = payload["id"].as_str().ok_or("Görev bulunamadı.")?;
-        if !core.data.tasks.iter().any(|t| t.id == id) {
-            return Err("Görev bulunamadı.".into());
-        }
+        let task = core
+            .data
+            .tasks
+            .iter()
+            .find(|t| t.id == id)
+            .ok_or("Görev bulunamadı.")?;
+        let key = task
+            .series_id
+            .clone()
+            .filter(|series| {
+                core.data
+                    .tasks
+                    .iter()
+                    .any(|parent| &parent.id == series && is_series(parent))
+            })
+            .unwrap_or_else(|| id.into());
         let rating = payload["rating"]
             .as_u64()
             .filter(|r| (1..=5).contains(r))
             .ok_or("Öncelik 1–5 yıldız arasında olmalı.")?;
         let path = core.path.with_file_name("priorities.json");
-        let mut priorities = priorities::Priorities::load(&path)?;
-        priorities.set(id, rating as u8)?;
+        let mut priorities = core.priorities.clone();
+        priorities.set(&key, rating as u8)?;
         priorities.save(&path)?;
+        if let Err(error) = storage::save_priority_metadata(&mut core.conn, &priorities) {
+            core.priorities.save(&path)?;
+            return Err(error);
+        }
         core.priorities = priorities;
         let snapshot = core.snapshot();
         drop(core);
@@ -237,6 +295,12 @@ fn execute(
                 .as_object_mut()
                 .ok_or("Görev geçersiz.")?
                 .remove("pomodoroMin");
+            let confirmed_series = fields
+                .as_object_mut()
+                .unwrap()
+                .remove("confirmedSeriesChange")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
             let mut task: Task = serde_json::from_value(fields).map_err(|e| e.to_string())?;
             let is_new = !next.tasks.iter().any(|old| old.id == task.id);
             if let Some(minutes) = durations::validate_input(duration.as_ref(), is_new)? {
@@ -246,8 +310,57 @@ fn execute(
             }
             task.title = task.title.trim().into();
             let previous = next.tasks.iter().find(|old| old.id == task.id);
+            if previous.is_some_and(|old| {
+                old.kind != task.kind || old.recurrence_rule != task.recurrence_rule
+            }) && (next.suspended_work.keys().any(|id| {
+                id == &task.id
+                    || next.tasks.iter().any(|instance| {
+                        &instance.id == id && instance.series_id.as_ref() == Some(&task.id)
+                    })
+            }) || (next.timer.phase != "idle"
+                && next.timer.task_id.as_ref().is_some_and(|id| {
+                    id == &task.id
+                        || next.tasks.iter().any(|instance| {
+                            &instance.id == id && instance.series_id.as_ref() == Some(&task.id)
+                        })
+                })))
+            {
+                return Err("Çalışan veya bekleyen oturum varken görev türü değiştirilemez. Önce mevcut oturumu bitirin.".into());
+            }
+            if previous.is_some_and(is_series) && task.kind.as_deref() == Some("deadline") {
+                if !confirmed_series {
+                    return Err("Seriyi son tarihli işe çevirmek için önce onay verin.".into());
+                }
+                if next.suspended_work.keys().any(|id| {
+                    id == &task.id
+                        || next.tasks.iter().any(|instance| {
+                            &instance.id == id && instance.series_id.as_ref() == Some(&task.id)
+                        })
+                }) {
+                    return Err("Bu seride bekleyen bir odak oturumu var. Önce kaldığı yerden devam edip Bitir ile kapatın.".into());
+                }
+                if next.timer.phase != "idle"
+                    && next.timer.task_id.as_ref().is_some_and(|id| {
+                        id == &task.id
+                            || next.tasks.iter().any(|instance| {
+                                &instance.id == id && instance.series_id.as_ref() == Some(&task.id)
+                            })
+                    })
+                {
+                    return Err("Bu serinin çalışan oturumu varken türü değiştirilemez. Önce oturumu bitirin veya başka işe geçin.".into());
+                }
+            }
+            if previous.is_some_and(is_series) && is_series(&task) && !confirmed_series {
+                return Err("Seri düzenlemesi için önce onay verin.".into());
+            }
             validate_label_change(&task, previous)?;
             validate_task(&task)?;
+            if task.status == "completed" {
+                if next.suspended_work.contains_key(&task.id) && !confirmed_series {
+                    return Err("Bekleyen oturumu kaldırmadan önce onay verin.".into());
+                }
+                next.suspended_work.remove(&task.id);
+            }
             validate_planning_change(
                 &task,
                 next.tasks.iter().find(|old| old.id == task.id),
@@ -282,12 +395,16 @@ fn execute(
         )?,
         "toggle_task" => {
             let id = payload["id"].as_str().ok_or("Görev bulunamadı.")?;
+            if next.suspended_work.contains_key(id) && payload["confirmed"].as_bool() != Some(true)
+            {
+                return Err("Bekleyen oturumu kapatmadan önce onay verin.".into());
+            }
             let t = next
                 .tasks
                 .iter_mut()
                 .find(|t| t.id == id)
                 .ok_or("Görev bulunamadı.")?;
-            if t.recurrence_rule.is_some() {
+            if is_series(t) {
                 return Err("Tekrar serisi yerine bir günün görevini tamamlayın.".into());
             }
             t.status = if t.status == "completed" {
@@ -301,6 +418,9 @@ fn execute(
             } else {
                 None
             };
+            if t.status == "completed" {
+                next.suspended_work.remove(id);
+            }
         }
         "delete_task" => {
             let id = payload["id"].as_str().ok_or("Görev bulunamadı.")?;
@@ -310,6 +430,7 @@ fn execute(
             // Removing a series preserves completed and started history.
             prune_future_instances(&mut next, id, Local::now().date_naive());
             next.tasks.retain(|t| t.id != id);
+            next.suspended_work.remove(id);
         }
         "ensure_day" => {
             let date = NaiveDate::parse_from_str(
@@ -336,14 +457,11 @@ fn execute(
                 .as_str()
                 .ok_or("Önce adı olan bir görev seçin.")?;
             prepare_focus_start(&mut next, id, Local::now().date_naive())?;
-            let task = Some(id.to_string());
-            next.timer.work_min = work as u32;
-            next.timer.break_min = rest as u32;
-            next.timer.begin(task, "work", work as u32, now);
+            begin_focus(&mut next, id, work as u32, rest as u32, now)?;
         }
         "pause" => next.timer.pause(now)?,
         "resume" => next.timer.resume(now)?,
-        "cancel" => next.timer.cancel(),
+        "cancel" => cancel_focus(&mut next),
         "continue_work" => {
             if !next.timer.break_ready || next.timer.phase != "idle" {
                 return Err("Mola henüz bitmedi.".into());
@@ -359,8 +477,8 @@ fn execute(
                 next.tasks.iter().find(|t| t.id == id).unwrap(),
                 next.timer.work_min,
             );
-            next.timer.work_min = minutes;
-            next.timer.begin(task, "work", minutes, now);
+            let break_min = next.timer.break_min;
+            begin_focus(&mut next, task.as_deref().unwrap(), minutes, break_min, now)?;
         }
         "extend_break" => {
             if !next.timer.break_ready || next.timer.phase != "idle" {
@@ -428,6 +546,8 @@ fn notify_finish(app: &tauri::AppHandle, phase: &str) {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Backup {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    priorities: Option<priorities::Priorities>,
     format: String,
     version: u32,
     exported_at: i64,
@@ -447,6 +567,9 @@ fn validate_backup(data: &Data) -> Result<(), String> {
     let mut sessions = std::collections::HashSet::new();
     for s in &data.sessions {
         if !sessions.insert(&s.id)
+            || s.outcome
+                .as_deref()
+                .is_some_and(|outcome| !["elapsed", "finished", "switched"].contains(&outcome))
             || !["work", "break"].contains(&s.r#type.as_str())
             || s.planned_min < 1
             || s.planned_min > 90
@@ -480,6 +603,23 @@ fn validate_backup(data: &Data) -> Result<(), String> {
     } else {
         t.phase.as_str()
     };
+    if t.work_budget_ms.is_some_and(|budget| {
+        effective_phase != "work" || budget <= 0 || budget > t.planned_min as i64 * 60_000
+    }) {
+        return Err("Devam oturumunun kalan süresi geçersiz.".into());
+    }
+    for (id, pending) in &data.suspended_work {
+        if !(1..=90).contains(&pending.planned_min)
+            || pending.remaining_ms <= 0
+            || pending.remaining_ms > pending.planned_min as i64 * 60_000
+            || !data
+                .tasks
+                .iter()
+                .any(|task| &task.id == id && task.status == "active" && !is_series(task))
+        {
+            return Err("Bekleyen odak oturumu geçersiz.".into());
+        }
+    }
     if effective_phase == "work" && t.planned_min > 90
         || effective_phase == "break" && t.planned_min > 30
     {
@@ -533,6 +673,7 @@ async fn export_backup(app: tauri::AppHandle) -> Result<Option<String>, String> 
         let state = app.state::<AppState>();
         let core = state.0.lock().map_err(|e| e.to_string())?;
         let backup = Backup {
+            priorities: Some(core.priorities.clone()),
             format: "odak-backup".into(),
             version: 1,
             exported_at: Local::now().timestamp_millis(),
@@ -568,6 +709,9 @@ async fn import_backup(app: tauri::AppHandle, confirmed: bool) -> Result<Option<
             return Err("Desteklenmeyen yedek biçimi.".into());
         }
         validate_backup(&backup.data)?;
+        if let Some(priorities) = &backup.priorities {
+            priorities.validate()?;
+        }
         if let Some(durations) = &backup.task_durations {
             durations.validate()?;
         }
@@ -582,6 +726,7 @@ async fn import_backup(app: tauri::AppHandle, confirmed: bool) -> Result<Option<
         std::fs::write(
             &recovery,
             serde_json::to_vec_pretty(&Backup {
+                priorities: Some(core.priorities.clone()),
                 format: "odak-backup".into(),
                 version: 1,
                 exported_at: Local::now().timestamp_millis(),
@@ -600,7 +745,17 @@ async fn import_backup(app: tauri::AppHandle, confirmed: bool) -> Result<Option<
             let _ = synchronize_services(&app, Some(&backup.data.settings), &old_settings);
             return Err("İçe aktarma sırasında sayaç başlatıldı. Önce sayacı iptal edin.".into());
         }
-        core.commit_with_durations(backup.data, backup.task_durations)?;
+        let previous_priorities = core.priorities.clone();
+        if let Some(priorities) = backup.priorities {
+            core.priorities = priorities;
+        }
+        let priority_path = core.path.with_file_name("priorities.json");
+        core.priorities.save(&priority_path)?;
+        if let Err(error) = core.commit_with_durations(backup.data, backup.task_durations) {
+            core.priorities = previous_priorities;
+            core.priorities.save(&priority_path)?;
+            return Err(error);
+        }
         drop(core);
         let _ = app.emit("data-changed", ());
         Ok(Some(recovery.to_string_lossy().into()))
@@ -619,7 +774,7 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
     changed |= !finished.is_empty();
     let mut reminders = vec![];
     for task in &next.tasks {
-        if task.status != "active" || task.recurrence_rule.is_some() {
+        if task.status != "active" || is_series(task) || archived_occurrence(&next.tasks, task) {
             continue;
         }
         if let Some(start) = task.start_at {
@@ -694,6 +849,7 @@ pub fn run() {
         import_backup,
         request_notification_permission,
         drive_backup_status,
+        inspect_database,
         smoke::smoke_report
     ]);
     #[cfg(not(debug_assertions))]
@@ -703,7 +859,8 @@ pub fn run() {
         export_backup,
         import_backup,
         request_notification_permission,
-        drive_backup_status
+        drive_backup_status,
+        inspect_database
     ]);
     builder
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
@@ -745,8 +902,19 @@ pub fn run() {
             let data = storage::load(&conn).map_err(std::io::Error::other)?;
             let labels =
                 labels::Catalog::load(&dir.join("labels.json")).map_err(std::io::Error::other)?;
-            let priorities = priorities::Priorities::load(&dir.join("priorities.json"))
-                .map_err(std::io::Error::other)?;
+            let disk_priorities: Option<priorities::Priorities> =
+                storage::read_meta(&conn, "priorities").map_err(std::io::Error::other)?;
+            let priorities = match disk_priorities {
+                Some(priorities) => priorities,
+                None => {
+                    let mut legacy = priorities::Priorities::load(&dir.join("priorities.json"))
+                        .map_err(std::io::Error::other)?;
+                    legacy
+                        .resolve_legacy_series(&data.tasks, &Local::now().date_naive().to_string());
+                    legacy
+                }
+            };
+            priorities.validate().map_err(std::io::Error::other)?;
             let durations = durations::Durations::load(&dir.join("task-durations.json"))
                 .map_err(std::io::Error::other)?;
             let service_error = synchronize_services(app.handle(), None, &data.settings).err();
@@ -830,6 +998,34 @@ pub fn run() {
 mod backup_tests {
     use super::*;
     #[test]
+    fn backup_roundtrip_preserves_switch_remainders_and_sqlite_priority_metadata() {
+        let mut data = Data::default();
+        let task = |id: &str| {
+            serde_json::from_value(json!({"id":id,"title":"Task","label":"İş","color":"#438470","notes":"Keep","status":"active","completedAt":null,"estimateMin":null,"scheduledDate":null,"startAt":null,"endAt":null,"dueAt":null,"recurrenceRule":null,"seriesId":null,"subtasks":[],"createdAt":0})).unwrap()
+        };
+        data.tasks = vec![task("a"), task("b")];
+        data.timer.begin(Some("a".into()), "work", 45, 1000);
+        switch_focus(&mut data, "a", 1000, "b", 30, 15, 1_651_000).unwrap();
+        let mut priorities = priorities::Priorities::default();
+        priorities.set("a", 5).unwrap();
+        let backup = Backup {
+            priorities: Some(priorities),
+            format: "odak-backup".into(),
+            version: 1,
+            exported_at: 1_651_000,
+            data,
+            task_durations: None,
+        };
+        let restored: Backup =
+            serde_json::from_slice(&serde_json::to_vec(&backup).unwrap()).unwrap();
+        validate_backup(&restored.data).unwrap();
+        assert_eq!(restored.data.suspended_work["a"].remaining_ms, 1_050_000);
+        assert_eq!(restored.priorities.unwrap().0["a"], 5);
+        let mut broken = restored.data.clone();
+        broken.suspended_work.get_mut("a").unwrap().remaining_ms = 0;
+        assert!(validate_backup(&broken).is_err());
+    }
+    #[test]
     fn early_finished_work_survives_sqlite_and_json_backup_validation() {
         let mut data = Data::default();
         data.tasks.push(serde_json::from_value(json!({"id":"early","title":"Task","label":"İş","color":"#438470","notes":"Preserve","status":"active","completedAt":null,"estimateMin":120,"scheduledDate":null,"startAt":null,"endAt":null,"dueAt":null,"recurrenceRule":null,"seriesId":null,"subtasks":[],"createdAt":0})).unwrap());
@@ -848,6 +1044,7 @@ mod backup_tests {
             format: "odak-backup".into(),
             version: 1,
             exported_at: 750000,
+            priorities: None,
             data: restored,
             task_durations: None,
         };
@@ -922,6 +1119,7 @@ mod backup_tests {
         d.timer.pause(61000).unwrap();
         d.settings.quiet_mode = true;
         let bytes = serde_json::to_vec(&Backup {
+            priorities: None,
             format: "odak-backup".into(),
             version: 1,
             exported_at: 10,

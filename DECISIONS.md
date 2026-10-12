@@ -62,3 +62,17 @@
 - Idle focus previews use the selected task's planned duration even after a finished break; selection preserves the idle timer and recorded history.
 - Finished one-second work sessions count as complete sessions with exact fractional minutes; positive sub-minute focus displays seconds instead of rounding to zero minutes.
 - v1.7.0 is packaged and published without restarting or replacing the installed app or directly changing the user's SQLite data.
+- v1.8.0 stores priorities in existing SQLite meta rows with a synced JSON compatibility copy; task/session/timer rows are not rewritten by rating changes and SQLite is authoritative after reopen.
+- Recurrence ratings are shared by the series; legacy per-instance ratings resolve from the latest rated date on or before today without removing any old keys or changing task payloads.
+- phpMyAdmin requires MySQL/MariaDB; the offline SQLite app instead provides a read-only disk inspector with raw records, search, refresh, database path and integrity check, without creating a server or account.
+- Optional task kinds distinguish list, deadline and recurring workflows; no bulk classification or schema migration is performed on existing user tasks.
+- Legacy mixed series require an explicit confirmed choice; converting to deadline retains all stored recurrence/instance history while stopping generation and hiding obsolete active duplicates.
+- Deadline jobs complete once and appear on their completion day; periodic jobs complete one dated occurrence while their series remains active for subsequent periods.
+- Task forms remove start/end, total estimate and optional day inputs; stored legacy values remain intact and Today/List/Calendar creation supplies date context automatically.
+- Confirmed task switching closes the worked fragment with exact elapsed credit and persists the remaining millisecond budget per task; pauses do not count and stale session tokens cannot switch a replacement session.
+- Resuming a saved remainder consumes its budget and then restores the original planned duration for the next session; cancelling a resumed fragment preserves previously earned credit and restores its pre-resume budget.
+- Suspended work protects recurrence instances from pruning and blocks workflow/rule conversions until the pending or running family session is closed; destructive series changes still require confirmation.
+- New session outcome metadata distinguishes expiry, explicit Finish and task switching; legacy sessions retain absent outcome fields and no historical completion method is invented.
+- Daily trend selection controls label distribution for that same local day; Today, Monday-based week and trailing 14-day filters use actual work credit including switched fragments and exclude breaks.
+- JSON and Drive backups include optional suspendedWork and priorities metadata while accepting older backups; new backups require the current or newer application for restore.
+- v1.8.0 is verified and packaged without replacing or restarting the installed app and without direct writes to the user's database.

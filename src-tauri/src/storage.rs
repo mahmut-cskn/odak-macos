@@ -46,12 +46,49 @@ pub fn load(conn: &Connection) -> Result<Data, String> {
             "notified" => {
                 data.notified = serde_json::from_str(&payload).map_err(|e| e.to_string())?
             }
+            "suspendedWork" => {
+                data.suspended_work = serde_json::from_str(&payload).map_err(|e| e.to_string())?
+            }
             _ => (),
         }
     }
     Ok(data)
 }
+#[cfg(test)]
 pub fn save(conn: &mut Connection, data: &Data) -> Result<(), String> {
+    save_with_priorities(conn, data, None)
+}
+pub fn read_meta<T: serde::de::DeserializeOwned>(
+    conn: &Connection,
+    key: &str,
+) -> Result<Option<T>, String> {
+    use rusqlite::OptionalExtension;
+    let value: Option<String> = conn
+        .query_row("SELECT payload FROM meta WHERE key=?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(|e| e.to_string())?;
+    value
+        .map(|value| serde_json::from_str(&value).map_err(|e| e.to_string()))
+        .transpose()
+}
+pub fn save_priority_metadata(
+    conn: &mut Connection,
+    priorities: &crate::priorities::Priorities,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key,payload) VALUES('priorities',?1)",
+        [serde_json::to_string(priorities).map_err(|e| e.to_string())?],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+pub fn save_with_priorities(
+    conn: &mut Connection,
+    data: &Data,
+    priorities: Option<&crate::priorities::Priorities>,
+) -> Result<(), String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     tx.execute_batch("DELETE FROM tasks; DELETE FROM sessions;")
         .map_err(|e| e.to_string())?;
@@ -79,10 +116,18 @@ pub fn save(conn: &mut Connection, data: &Data) -> Result<(), String> {
         ("timer", serde_json::to_string(&data.timer)),
         ("settings", serde_json::to_string(&data.settings)),
         ("notified", serde_json::to_string(&data.notified)),
+        ("suspendedWork", serde_json::to_string(&data.suspended_work)),
     ] {
         tx.execute(
             "INSERT OR REPLACE INTO meta VALUES (?1,?2)",
             params![key, payload.map_err(|e| e.to_string())?],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(priorities) = priorities {
+        tx.execute(
+            "INSERT OR REPLACE INTO meta(key,payload) VALUES('priorities',?1)",
+            [serde_json::to_string(priorities).map_err(|e| e.to_string())?],
         )
         .map_err(|e| e.to_string())?;
     }

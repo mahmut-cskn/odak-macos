@@ -72,13 +72,16 @@ def create_snapshot(source, destination):
 def data_from_snapshot(path):
     with contextlib.closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
         meta = {key: json.loads(payload) for key, payload in connection.execute("SELECT key,payload FROM meta")}
-        return {
+        data = {
             "tasks": [json.loads(row[0]) for row in connection.execute("SELECT payload FROM tasks ORDER BY rowid")],
             "sessions": [json.loads(row[0]) for row in connection.execute("SELECT payload FROM sessions ORDER BY rowid")],
             "timer": meta["timer"],
             "settings": meta["settings"],
             "notified": meta.get("notified", []),
         }
+        if meta.get("suspendedWork"):
+            data["suspendedWork"] = meta["suspendedWork"]
+        return data
 
 
 def create_archive(source, destination, now):
@@ -88,6 +91,13 @@ def create_archive(source, destination, now):
         create_snapshot(source, snapshot)
         data = data_from_snapshot(snapshot)
         envelope = {"format": "odak-backup", "version": 1, "exportedAt": int(now.timestamp() * 1000), "data": data}
+        with contextlib.closing(sqlite3.connect(snapshot.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            saved = connection.execute("SELECT payload FROM meta WHERE key='priorities'").fetchone()
+        priority_file = source.with_name("priorities.json")
+        if saved:
+            envelope["priorities"] = json.loads(saved[0])
+        elif priority_file.is_file():
+            envelope["priorities"] = read_json(priority_file)
         duration_file = source.with_name("task-durations.json")
         if duration_file.is_file():
             task_ids = {task["id"] for task in data["tasks"]}

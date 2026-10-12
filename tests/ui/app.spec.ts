@@ -65,6 +65,20 @@ async function setup(page: Page) {
     const priorities: Record<string, number> = {};
     const taskDurations: Record<string, number> = {};
     const calls: { cmd: string; args: any }[] = [];
+    data.suspendedWork = {};
+    const remaining = (timer: any, now = Date.now()) =>
+      timer.phase === "idle"
+        ? 0
+        : Math.max(
+            0,
+            (timer.workBudgetMs ?? timer.plannedMin * 60000) -
+              Math.max(
+                0,
+                (timer.pausedAt ?? now) -
+                  timer.startedAt -
+                  timer.pausedAccumulatedMs,
+              ),
+          );
     const snapshot = () => ({
       labels: [
         ...new Map([
@@ -77,8 +91,7 @@ async function setup(page: Page) {
       priorities: { ...priorities },
       taskDurations: { ...taskDurations },
       data: structuredClone(data),
-      remainingMs:
-        data.timer.phase === "idle" ? 0 : data.timer.plannedMin * 60000,
+      remainingMs: remaining(data.timer),
       databasePath:
         "~/Library/Application Support/com.mahmutcskn.odak/odak.sqlite3",
       serviceError: null,
@@ -102,18 +115,29 @@ async function setup(page: Page) {
           return { configured: true, lastUploadedAt: new Date().toISOString() };
         if (cmd === "export_backup") return "/tmp/odak-yedek.json";
         if (cmd === "import_backup") return "/tmp/recovery.json";
+        if (cmd === "inspect_database")
+          return {
+            ...snapshot(),
+            prioritySource: "SQLite",
+            integrity: "ok",
+            inspectedAt: Date.now(),
+          };
         const p = args.payload;
         if (
-          ["delete_task", "delete_label", "cancel", "finish"].includes(
-            args.action,
-          ) &&
+          [
+            "delete_task",
+            "delete_label",
+            "cancel",
+            "finish",
+            "switch_task",
+          ].includes(args.action) &&
           !p.confirmed
         )
           throw new Error("Onay gerekli.");
         switch (args.action) {
           case "save_task": {
             const i = data.tasks.findIndex((t: any) => t.id === p.id);
-            const { pomodoroMin, ...task } = p;
+            const { pomodoroMin, confirmedSeriesChange, ...task } = p;
             if (
               (i === -1 || task.label !== data.tasks[i].label) &&
               !task.label.trim()
@@ -132,7 +156,16 @@ async function setup(page: Page) {
             break;
           }
           case "set_priority":
-            priorities[p.id] = p.rating;
+            {
+              const task = data.tasks.find((task: any) => task.id === p.id),
+                parent = data.tasks.find(
+                  (parent: any) =>
+                    parent.id === task?.seriesId &&
+                    parent.recurrenceRule &&
+                    parent.kind !== "deadline",
+                );
+              priorities[parent?.id || p.id] = p.rating;
+            }
             break;
           case "rename_task":
             data.tasks.find((t: any) => t.id === p.id).title = p.title.trim();
@@ -163,6 +196,39 @@ async function setup(page: Page) {
           case "delete_task":
             data.tasks = data.tasks.filter((t: any) => t.id !== p.id);
             break;
+          case "switch_task": {
+            const timer = data.timer,
+              now = Date.now();
+            if (
+              timer.taskId !== p.fromTaskId ||
+              timer.startedAt !== p.startedAt
+            )
+              throw new Error("Oturum değişti.");
+            if (timer.phase === "work" || timer.pausedPhase === "work") {
+              const left = remaining(timer, now),
+                elapsed =
+                  (timer.workBudgetMs ?? timer.plannedMin * 60000) - left;
+              if (elapsed > 0)
+                data.sessions.push({
+                  id: crypto.randomUUID(),
+                  taskId: timer.taskId,
+                  type: "work",
+                  startedAt: timer.startedAt,
+                  endedAt: now,
+                  plannedMin: timer.plannedMin,
+                  actualMin: elapsed / 60000,
+                  label: data.tasks.find(
+                    (task: any) => task.id === timer.taskId,
+                  ).label,
+                  outcome: "switched",
+                });
+              if (left > 0)
+                data.suspendedWork[timer.taskId] = {
+                  remainingMs: left,
+                  plannedMin: timer.plannedMin,
+                };
+            }
+          }
           case "start": {
             if (!p.taskId) throw new Error("Bir görev seçin.");
             if (!data.tasks.some((task: any) => task.id === p.taskId)) {
@@ -185,11 +251,16 @@ async function setup(page: Page) {
                 })),
               });
             }
+            const pending = data.suspendedWork[p.taskId];
+            delete data.suspendedWork[p.taskId];
             data.timer = {
               ...data.timer,
-              ...p,
+              taskId: p.taskId,
+              workMin: pending?.plannedMin ?? p.workMin,
+              breakMin: p.breakMin,
               phase: "work",
-              plannedMin: p.workMin,
+              plannedMin: pending?.plannedMin ?? p.workMin,
+              workBudgetMs: pending?.remainingMs,
               startedAt: Date.now() - ((window as any).odakStartOffset || 0),
               pausedPhase: null,
               pausedAt: null,
@@ -219,7 +290,7 @@ async function setup(page: Page) {
               const elapsed = Math.max(
                 0,
                 Math.min(
-                  timer.plannedMin * 60000,
+                  timer.workBudgetMs ?? timer.plannedMin * 60000,
                   (timer.pausedAt ?? now) -
                     timer.startedAt -
                     timer.pausedAccumulatedMs,
@@ -234,8 +305,10 @@ async function setup(page: Page) {
                 plannedMin: timer.plannedMin,
                 actualMin: elapsed / 60000,
                 label: task.label,
+                outcome: "finished",
               });
             }
+            delete data.suspendedWork[task.id];
             task.status = "completed";
             task.completedAt = now;
             Object.assign(timer, {
@@ -250,6 +323,15 @@ async function setup(page: Page) {
             break;
           }
           case "cancel":
+            if (
+              (data.timer.phase === "work" ||
+                data.timer.pausedPhase === "work") &&
+              data.timer.workBudgetMs
+            )
+              data.suspendedWork[data.timer.taskId] = {
+                remainingMs: data.timer.workBudgetMs,
+                plannedMin: data.timer.plannedMin,
+              };
             data.timer.phase = "idle";
             data.timer.taskId = null;
             break;
@@ -330,16 +412,20 @@ test("adds a future scheduled task from the selected calendar day", async ({
   const day = await dates.nth(13).getAttribute("aria-label");
   await dates.nth(13).click();
   await page.getByRole("button", { name: "Bu güne görev ekle" }).click();
-  await expect(page.getByLabel("Gün", { exact: true })).toHaveValue(day!);
+  await expect(page.getByLabel("Gün", { exact: true })).toHaveCount(0);
   await page.getByLabel("Başlık", { exact: true }).fill("Lab kurulumu");
   await page.getByLabel("Etiket", { exact: true }).fill("Lab");
-  await page.getByLabel("Başlangıç saati").fill("14:00");
-  await page.getByLabel("Bitiş saati").fill("15:00");
+  await page.getByLabel("Görev türü", { exact: true }).selectOption("deadline");
+  await page
+    .getByLabel("Son bitirme tarihi", { exact: true })
+    .fill(`${day}T14:00`);
   await page.getByRole("button", { name: "Kaydet", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Lab kurulumu", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("14:00–15:00")).toBeVisible();
+  await expect(
+    page.getByLabel("Lab kurulumu: görev kartı", { exact: true }),
+  ).toContainText("14:00");
 });
 test("subtasks suggest completion and label filters work", async ({ page }) => {
   await page
@@ -539,7 +625,7 @@ test("adds trend chart without removing existing charts and fills required recur
   await page.getByLabel("İstatistik", { exact: true }).click();
   await expect(page.locator(".week-chart")).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Etikete göre · bu hafta" }),
+    page.getByRole("heading", { name: /^Etikete göre/ }),
   ).toBeVisible();
   await expect(
     page.getByLabel("Günlük odak çizgi grafiği", { exact: true }),
@@ -557,16 +643,16 @@ test("adds trend chart without removing existing charts and fills required recur
     .first()
     .click();
   await page.getByRole("button", { name: "Yeni görev", exact: true }).click();
-  await expect(page.getByLabel("Gün", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Gün", { exact: true })).toHaveCount(0);
+  await page
+    .getByLabel("Görev türü", { exact: true })
+    .selectOption("recurring");
   await page.getByLabel("Tekrar", { exact: true }).selectOption("daily");
   const today = await page.evaluate(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   });
-  await expect(page.getByLabel("Gün", { exact: true })).toHaveValue(today);
-  await expect(page.getByLabel("Gün", { exact: true })).toHaveClass(
-    "required-field",
-  );
+  await expect(page.getByLabel("Gün", { exact: true })).toHaveCount(0);
   await expect(
     page.getByText("Ana görevle aynı gün:", { exact: false }),
   ).toBeVisible();
@@ -793,10 +879,7 @@ test("recurring task labels use prominent badges and series priority is selectab
     (window as any).odakFixture.tasks.push(series);
     (window as any).odakNotify();
   });
-  await page
-    .getByRole("button", { name: "Liste", exact: false })
-    .first()
-    .click();
+  await page.getByRole("button", { name: "Tekrarlayan", exact: true }).click();
   await expect(page.locator(".series-row .label-tag")).toHaveText("İş");
   await page
     .getByRole("radiogroup", { name: "Günlük yazı: öncelik", exact: true })
@@ -838,7 +921,7 @@ test("requires a task Pomodoro duration and row start uses 30 minutes independen
     ).toBe(3);
   }
   await duration.fill("30");
-  await page.getByLabel("Tahmini süre", { exact: true }).fill("120");
+  await expect(page.getByLabel("Tahmini süre", { exact: true })).toHaveCount(0);
   await page.locator(".modal").evaluate((element) => {
     element.scrollTop = 0;
   });
@@ -860,7 +943,7 @@ test("requires a task Pomodoro duration and row start uses 30 minutes independen
     (t: any) => t.title === "Otuz dakikalık iş",
   );
   expect(state.taskDurations[task.id]).toBe(30);
-  expect(task.estimateMin).toBe(120);
+  expect(task.estimateMin).toBeNull();
   expect(task.pomodoroMin).toBeUndefined();
   expect(state.data.tasks.filter((t: any) => t.id !== task.id)).toEqual(
     before.data.tasks,
@@ -1435,23 +1518,6 @@ test("task card empty space and keyboard select its duration without starting or
   await backlog.press("Enter");
   await expect(page.getByLabel("Odaklanılacak görev")).toHaveValue("backlog");
   await expect(page.locator(".timer-number")).toHaveText("45:00");
-  await page.evaluate(() => {
-    (window as any).odakFixture.tasks[2].dueAt =
-      Date.now() - 2 * 24 * 60 * 60000;
-    (window as any).odakNotify();
-  });
-  const past: any = await page.evaluate(() =>
-    (window as any).odakTestApi.invoke("snapshot"),
-  );
-  await backlog.focus();
-  await backlog.press("Enter");
-  await expect(page.getByRole("status")).toContainText(
-    "Geçmiş günün görevi seçilemez",
-  );
-  const blocked: any = await page.evaluate(() =>
-    (window as any).odakTestApi.invoke("snapshot"),
-  );
-  expect(blocked.data).toEqual(past.data);
   await page.getByRole("button", { name: "Bugün", exact: true }).click();
   await page.getByLabel("Rapor yaz: başlat").click();
   await page.getByRole("button", { name: "Duraklat", exact: true }).click();
@@ -1461,7 +1527,7 @@ test("task card empty space and keyboard select its duration without starting or
   await card.focus();
   await card.press("Enter");
   await expect(page.getByRole("status")).toContainText(
-    "Çalışan oturumun görevi değiştirilemez",
+    "Görev değiştirmek için yeni işin ▶ düğmesine bas",
   );
   await expect(page.getByLabel("Odaklanılacak görev")).toHaveValue("report");
   const unchanged: any = await page.evaluate(() =>
@@ -1718,4 +1784,341 @@ test("manual tick adds no time but a one-second Finish counts one session and sh
   await expect(
     page.getByLabel("Rapor yaz: tamamlanan görev", { exact: true }),
   ).toContainText("Son oturum: 1sn / 45dk");
+});
+
+test("confirmed handoff credits exact elapsed work and resumes the saved remainder", async ({
+  page,
+}) => {
+  await page.getByLabel("Rapor yaz: başlat").click();
+  await page.evaluate(() => {
+    const now = Date.now();
+    Object.assign((window as any).odakFixture.timer, {
+      phase: "paused",
+      pausedPhase: "work",
+      pausedAt: now,
+      startedAt: now - 27.5 * 60000,
+      pausedAccumulatedMs: 0,
+    });
+    (window as any).odakNotify();
+  });
+  await expect(page.locator(".timer-number")).toHaveText("17:30");
+  const before: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  await page.getByLabel("Sunum hazırla: başlat").click();
+  await expect(page.getByRole("alertdialog")).toContainText("27dk 30sn");
+  await page.screenshot({
+    path: "docs/screenshot-switch-confirm.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Vazgeç", exact: true }).click();
+  const cancelled: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(cancelled.data).toEqual(before.data);
+  await page.getByLabel("Sunum hazırla: başlat").click();
+  await page
+    .getByRole("button", { name: "Tamam, göreve geç", exact: true })
+    .click();
+  const switched: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(switched.data.sessions).toHaveLength(1);
+  expect(switched.data.sessions[0]).toMatchObject({
+    taskId: "report",
+    actualMin: 27.5,
+    outcome: "switched",
+  });
+  expect(switched.data.suspendedWork.report).toEqual({
+    remainingMs: 1050000,
+    plannedMin: 45,
+  });
+  expect(switched.data.tasks[0].status).toBe("active");
+  expect(switched.data.timer.taskId).toBe("slides");
+  await expect(page.locator(".task-list")).toContainText("17:30");
+  await page.screenshot({
+    path: "docs/screenshot-saved-remainder.png",
+    fullPage: true,
+  });
+  await page.evaluate(() => {
+    const now = Date.now();
+    Object.assign((window as any).odakFixture.timer, {
+      phase: "paused",
+      pausedPhase: "work",
+      pausedAt: now,
+      startedAt: now - 5 * 60000,
+      pausedAccumulatedMs: 0,
+    });
+    (window as any).odakNotify();
+  });
+  await page.getByLabel("Rapor yaz: başlat").click();
+  await page
+    .getByRole("button", { name: "Tamam, göreve geç", exact: true })
+    .click();
+  const resumed: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(resumed.data.timer).toMatchObject({
+    taskId: "report",
+    plannedMin: 45,
+    workBudgetMs: 1050000,
+  });
+  expect(resumed.data.suspendedWork.report).toBeUndefined();
+  expect(
+    resumed.data.sessions.reduce(
+      (sum: number, session: any) => sum + session.actualMin,
+      0,
+    ),
+  ).toBe(32.5);
+  await expect(page.locator(".timer-number")).toHaveText(/17:3[0-9]|17:2[0-9]/);
+});
+
+test("legacy mixed series converts explicitly without deleting historical instances or adding focus time", async ({
+  page,
+}) => {
+  const original = await page.evaluate(() => {
+    const fixture = (window as any).odakFixture,
+      date = new Date(),
+      due = new Date();
+    due.setDate(due.getDate() + 5);
+    const parent = {
+      ...structuredClone(fixture.tasks[0]),
+      id: "mixed",
+      title: "Politika belgeleri",
+      dueAt: due.getTime(),
+      recurrenceRule: {
+        frequency: "daily",
+        weekdays: [],
+        monthDay: date.getDate(),
+      },
+    };
+    const key = (date: Date) =>
+      `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    date.setDate(date.getDate() - 1);
+    const past = {
+      ...structuredClone(parent),
+      id: "mixed-past",
+      seriesId: "mixed",
+      recurrenceRule: null,
+      scheduledDate: key(date),
+      status: "completed",
+      completedAt: date.getTime(),
+    };
+    date.setDate(date.getDate() + 2);
+    const next = {
+      ...structuredClone(parent),
+      id: "mixed-next",
+      seriesId: "mixed",
+      recurrenceRule: null,
+      scheduledDate: key(date),
+    };
+    fixture.tasks.push(parent, past, next);
+    (window as any).odakNotify();
+    return [past, next];
+  });
+  await page.getByRole("button", { name: "Tekrarlayan", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Politika belgeleri", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toContainText(
+    "hem son tarih hem tekrar",
+  );
+  await page.getByLabel("Görev türü", { exact: true }).selectOption("deadline");
+  await page.getByLabel("Bu iş zaten tamamlandı", { exact: true }).check();
+  for (const field of ["Gün", "Başlangıç", "Bitiş", "Toplam iş tahmini (dk)"])
+    await expect(page.getByLabel(field, { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Kaydet", exact: true }).click();
+  await expect(page.getByRole("alertdialog")).toContainText(
+    "Eski günlerin kayıtları silinmez",
+  );
+  await page.getByRole("button", { name: "Evet, onayla", exact: true }).click();
+  const saved: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(
+    saved.data.tasks.filter((task: any) => task.seriesId === "mixed"),
+  ).toEqual(original);
+  expect(
+    saved.data.tasks.find((task: any) => task.id === "mixed"),
+  ).toMatchObject({
+    kind: "deadline",
+    status: "completed",
+    recurrenceRule: { frequency: "daily" },
+  });
+  expect(saved.data.sessions).toHaveLength(0);
+  await page.getByRole("button", { name: "Bugün", exact: true }).click();
+  await expect(
+    page
+      .getByLabel("Odaklanılacak görev")
+      .locator("option")
+      .filter({ hasText: "Politika belgeleri" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Tamamlanan", exact: true }).click();
+  await expect(
+    page.getByLabel("Politika belgeleri: tamamlanan görev", { exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: "docs/screenshot-deadline-completed.png",
+    fullPage: true,
+  });
+});
+
+test("series ratings are shared by the nearest weekly instance and the next Friday", async ({
+  page,
+}) => {
+  const nextDate = await page.evaluate(() => {
+    const fixture = (window as any).odakFixture,
+      date = new Date();
+    date.setDate(date.getDate() + ((5 - date.getDay() + 7) % 7));
+    const key = (date: Date) =>
+      `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    const first = key(date);
+    fixture.tasks.push({
+      ...structuredClone(fixture.tasks[0]),
+      id: "friday",
+      title: "Cuma kontrolü",
+      kind: "recurring",
+      scheduledDate: first,
+      dueAt: null,
+      recurrenceRule: { frequency: "weekly", weekdays: [5], monthDay: 1 },
+    });
+    (window as any).odakNotify();
+    date.setDate(date.getDate() + 7);
+    return { first, second: key(date) };
+  });
+  await page.getByRole("button", { name: "Tekrarlayan", exact: true }).click();
+  await page
+    .getByRole("radio", { name: "Cuma kontrolü: 5 yıldız", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Bugün", exact: true }).click();
+  const picker = page.getByLabel("Odaklanılacak görev");
+  await expect(
+    picker.locator("option").filter({ hasText: "Cuma kontrolü" }),
+  ).toHaveCount(1);
+  await expect(
+    picker.locator(`option[value="friday@${nextDate.first}"]`),
+  ).toBeAttached();
+  await page.evaluate(async ({ first }) => {
+    const fixture = (window as any).odakFixture,
+      parent = fixture.tasks.find((task: any) => task.id === "friday");
+    fixture.tasks.push({
+      ...structuredClone(parent),
+      id: `friday@${first}`,
+      seriesId: "friday",
+      recurrenceRule: null,
+      scheduledDate: first,
+      status: "completed",
+      completedAt: Date.now(),
+    });
+    (window as any).odakNotify();
+  }, nextDate);
+  await expect(
+    picker.locator(`option[value="friday@${nextDate.second}"]`),
+  ).toBeAttached();
+  await expect(
+    picker.locator("option").filter({ hasText: "Cuma kontrolü" }),
+  ).toHaveCount(1);
+  const state: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(state.priorities.friday).toBe(5);
+  expect(
+    state.data.tasks.find((task: any) => task.id === "friday").status,
+  ).toBe("active");
+});
+
+test("trend selection and label filters summarize the same actual work", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    const fixture = (window as any).odakFixture,
+      now = new Date();
+    now.setHours(12, 0, 0, 0);
+    const endedAt = now.getTime(),
+      past = new Date(now);
+    past.setDate(past.getDate() - 3);
+    for (const [id, label, actualMin, end, type] of [
+      ["old-a", "İş", 30, past.getTime(), "work"],
+      ["old-b", "Okul", 108, past.getTime(), "work"],
+      ["today", "Kişisel", 45, endedAt, "work"],
+      ["rest", "Mola", 15, past.getTime(), "break"],
+    ])
+      fixture.sessions.push({
+        id,
+        label,
+        actualMin,
+        endedAt: end,
+        type,
+        taskId: null,
+        startedAt: Number(end) - Number(actualMin) * 60000,
+        plannedMin: 45,
+      });
+    (window as any).odakNotify();
+  });
+  await page.getByLabel("İstatistik", { exact: true }).click();
+  await page.locator(".trend-hit").nth(10).click();
+  await expect(page.locator(".trend-detail")).toContainText("2sa 18dk");
+  await expect(page.locator(".label-stat")).toHaveCount(2);
+  await expect(
+    page.locator(".label-stat").filter({ hasText: "Okul" }),
+  ).toContainText("1sa 48dk");
+  await expect(
+    page.locator(".label-stat").filter({ hasText: "İş" }),
+  ).toContainText("30dk");
+  await page.screenshot({
+    path: "docs/screenshot-stats-selected-day.png",
+    fullPage: true,
+  });
+  await page.getByLabel("Etiket dağılımı dönemi").selectOption("today");
+  await expect(page.locator(".label-stat")).toHaveCount(1);
+  await expect(page.locator(".label-stat")).toContainText("Kişisel");
+  await page.getByLabel("Etiket dağılımı dönemi").selectOption("week");
+  await expect(
+    page.getByRole("heading", { name: "Etikete göre · Bu hafta", exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("Etiket dağılımı dönemi").selectOption("fortnight");
+  await expect(page.locator(".label-stat")).toHaveCount(3);
+});
+
+test("database inspector reads disk records and offers no mutation controls", async ({
+  page,
+}) => {
+  const before: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  await page.getByLabel("Ayarlar", { exact: true }).click();
+  await page
+    .getByRole("button", {
+      name: "Veritabanını incele · salt okunur",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Yerel veriler" }),
+  ).toBeVisible();
+  await expect(page.getByText("Bütünlük: ok", { exact: true })).toBeVisible();
+  await expect(page.locator(".inspection-table-wrap tbody tr")).toHaveCount(3);
+  await page.getByLabel("Kayıtlarda ara").fill("Sunum");
+  await expect(page.locator(".inspection-table-wrap tbody tr")).toHaveCount(1);
+  await page.getByText("Göster", { exact: true }).click();
+  await expect(page.locator(".inspection-table-wrap pre")).toContainText(
+    '"id": "slides"',
+  );
+  await page.screenshot({
+    path: "docs/screenshot-database.png",
+    fullPage: true,
+  });
+  await page.getByLabel("Kayıtlarda ara").clear();
+  await page.getByLabel("Veri tablosu").selectOption("meta");
+  await expect(page.locator(".inspection-table-wrap tbody tr")).toHaveCount(3);
+  await page
+    .getByRole("button", { name: "Diskten yenile", exact: true })
+    .click();
+  const after: any = await page.evaluate(() =>
+    (window as any).odakTestApi.invoke("snapshot"),
+  );
+  expect(after.data).toEqual(before.data);
+  expect(await page.getByRole("button", { name: /Sil|Kaydet/ }).count()).toBe(
+    0,
+  );
 });
