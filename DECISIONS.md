@@ -76,3 +76,4 @@
 - Daily trend selection controls label distribution for that same local day; Today, Monday-based week and trailing 14-day filters use actual work credit including switched fragments and exclude breaks.
 - JSON and Drive backups include optional suspendedWork and priorities metadata while accepting older backups; new backups require the current or newer application for restore.
 - v1.8.0 is verified and packaged without replacing or restarting the installed app and without direct writes to the user's database.
+- The optional Aiven MySQL mirror keeps SQLite authoritative, reads it in a consistent read-only transaction, stores credentials only in macOS Keychain, retains verified cloud snapshots, and restores through a user-selected JSON import rather than overwriting local data.

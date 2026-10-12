@@ -1,6 +1,6 @@
 # Odak
 
-**Odaklan, planla, tamamla.** Odak, macOS menü çubuğunda yaşayan Türkçe bir Pomodoro ve görev planlayıcıdır. Odak uygulamasında hesap, sunucu, telemetri veya dış takvim bağlantısı yoktur. Veriler yerel SQLite’ta kalır. İsteyenler bu Mac’e ayrıca günlük Drive yedekleme yardımcısı kurabilir.
+**Odaklan, planla, tamamla.** Odak, macOS menü çubuğunda yaşayan Türkçe bir Pomodoro ve görev planlayıcıdır. Odak uygulamasında hesap, telemetri veya dış takvim bağlantısı yoktur; asıl çalışma verileri yerel SQLite’ta kalır. İsteyenler bu Mac’e ayrıca günlük Drive yedeği veya özel Aiven MySQL aynası kurabilir.
 
 ![Odak açık tema](docs/screenshot-light.png)
 
@@ -78,7 +78,11 @@ SQLite dosyası `~/Library/Application Support/com.mahmutcskn.odak/odak.sqlite3`
 
 Etiket seçim listesi `labels.json`, görev pomodoro süreleri `task-durations.json` dosyasında saklanır. Yıldızlar artık SQLite’ın mevcut `meta` tablosunda kalıcıdır; `priorities.json` ayrıca uyumluluk kopyası olarak tutulur. Bekleyen odak süreleri aynı veritabanında saklanır. Tablo şeması değiştirilmez, eski görevler topluca dönüştürülmez. JSON dışa aktarma yıldızları, kalan süreleri ve görev pomodoro sürelerini de içerir; eski JSON yedekleri açılabilir. Yeni sürümde alınan yedeği geri yüklemek için bu sürümü veya daha yenisini kullan. Üç tercih dosyası Drive ZIP yedeğinde de bulunur.
 
-**Ayarlar → Veritabanını incele · salt okunur**: Veriler doğrudan SQLite’tan yeniden okunur; görevler, çalışma/mola kayıtları, yıldızlar, sayaç, bekleyen süreler ve ayarlar listelenir. Arama, ham JSON kaydı, dosya yolu, diskten yenileme ve bütünlük kontrolü vardır. Bu ekran düzenleme/silme yapmaz. [phpMyAdmin MySQL/MariaDB içindir](https://docs.phpmyadmin.net/en/latest/intro.html); Odak’ın yerel SQLite dosyası için phpMyAdmin hesabı gerekmez ve oluşturulmaz.
+**Ayarlar → Veritabanını incele · salt okunur**: Veriler doğrudan SQLite’tan yeniden okunur; görevler, çalışma/mola kayıtları, yıldızlar, sayaç, bekleyen süreler ve ayarlar listelenir. Arama, ham JSON kaydı, dosya yolu, diskten yenileme ve bütünlük kontrolü vardır. Bu ekran düzenleme/silme yapmaz.
+
+### İsteğe bağlı Aiven MySQL aynası
+
+[Bağlantı, DBeaver ve yeni Mac’e geri yükleme adımları](docs/MYSQL_CLOUD.md). Uygulamadan ayrı çalışan araç canlı SQLite’ı salt okunur açar, TLS ile özel Aiven MySQL hesabına bağlanır ve her başarılı yüklemede doğrulanmış bir geçmiş anlık görüntüsü saklar. Parola yalnızca macOS Anahtar Zinciri’ndedir; GitHub’a veya uygulama paketine girmez. DBeaver’da `odak_tasks`, `odak_sessions`, `odak_labels`, `odak_meta` ve yedek tabloları doğrudan görülebilir.
 
 ### İsteğe bağlı günlük Google Drive yedeği
 
@@ -106,6 +110,6 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 npm run tauri build -- --target universal-apple-darwin
 ```
 
-`v*` etiketi push edildiğinde GitHub Actions universal DMG oluşturup Release’e ekler. SQLite `rusqlite` ile pakete gömülüdür; zamanlayıcı, bildirim zamanlaması, ses ve menü çubuğu Rust’ta çalışır. React/TypeScript arayüz ve istatistikleri yönetir. macOS izin penceresi ve afişler için küçük bir `UNUserNotificationCenter` köprüsü kullanılır. Üretim arayüzü dış kaynağa ağ isteği yapamaz.
+`v*` etiketi push edildiğinde GitHub Actions universal DMG oluşturup Release’e ekler. SQLite `rusqlite` ile pakete gömülüdür; zamanlayıcı, bildirim zamanlaması, ses ve menü çubuğu Rust’ta çalışır. React/TypeScript arayüz ve istatistikleri yönetir. macOS izin penceresi ve afişler için küçük bir `UNUserNotificationCenter` köprüsü kullanılır. Üretim arayüzü dış kaynağa ağ isteği yapamaz; Drive ve MySQL araçları uygulamadan ayrı çalışır.
 
 [Kararlar](DECISIONS.md) · [Doğrulama](docs/VALIDATION.md)
